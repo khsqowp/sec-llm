@@ -1,0 +1,126 @@
+llm:
+  model: "hf.co/mradermacher/Qwen2.5-Coder-14B-Instruct-Uncensored-GGUF:Q4_K_M"
+  embedding_model: "nomic-embed-cpu"
+  timeout: 600
+  max_retries: 3
+
+  # 기본 컨텍스트 (미지정 태스크 폴백)
+  num_ctx: 8192
+
+  # 태스크별 최적화된 컨텍스트 윈도우 (M3 Pro 18GB 기준)
+  # 모델 8.7GB + KV캐시: 4096ctx≈0.8GB, 8192ctx≈1.6GB, 12288ctx≈2.4GB
+  num_ctx_classify: 4096          # 분류: 짧은 입력, 단답 출력
+  num_ctx_classify_metadata: 6144  # 분류+메타: 중간 입력, YAML 출력
+  num_ctx_metadata: 4096           # 메타만: 짧은 입력
+  num_ctx_toc: 4096                # 목차: 짧은 입력
+  num_ctx_summarize: 4096          # 청크 요약: 2000단어 청크 + 출력 (4096→0.8GB KV, OOM 방지)
+  num_ctx_meta_summary: 4096       # 메타 요약: 합산 내용 + 섹션 출력 (4096→0.8GB KV, OOM 방지)
+  num_ctx_links: 4096              # 링크 제안: 노트 목록
+  num_ctx_health: 8192             # 건강 진단: vault 요약
+  num_ctx_merge_eval: 4096         # 폴더 병합 판단: JSON 출력
+
+processing:
+  max_words_per_chunk: 2000        # 청크당 최대 단어 수
+  max_words_per_note: 4000         # 노트 분할 기준 단어 수
+  similarity_threshold: 0.85       # Qdrant 유사도 임계값
+  stability_wait: 2.0              # 파일 안정화 대기 시간(초)
+  worker_threads: 1                # 동시 처리 스레드 (단일: 모델 VRAM 안정성)
+
+  skip_extensions:
+    - ".class"
+    - ".exe"
+    - ".dll"
+    - ".so"
+    - ".dylib"
+    - ".bin"
+    - ".zip"
+    - ".tar"
+    - ".gz"
+    - ".7z"
+    - ".DS_Store"
+
+  code_extensions:
+    - ".py"
+    - ".java"
+    - ".js"
+    - ".ts"
+    - ".tsx"
+    - ".jsx"
+    - ".c"
+    - ".cpp"
+    - ".h"
+    - ".go"
+    - ".rs"
+    - ".sh"
+    - ".bash"
+    - ".sql"
+
+# 분류 가능한 도메인 목록 (순서: 우선순위 반영)
+domains:
+  - 관제
+  - 네트워크
+  - 리눅스
+  - AWS
+  - 모의해킹
+  - 취약점진단
+  - 소스코드진단
+  - 암호학
+  - 리버싱
+  - 모바일진단
+  - 아이디어
+  - 스크랩
+
+vault:
+  # AI 산출물: LocalLLM/{domain}
+  domain_folders:
+    관제: "LocalLLM/01_Security/관제"
+    네트워크: "LocalLLM/01_Security/네트워크"
+    리눅스: "LocalLLM/01_Security/인프라/운영체제"
+    AWS: "LocalLLM/01_Security/AWS"
+    모의해킹: "LocalLLM/01_Security/모의해킹"
+    취약점진단: "LocalLLM/01_Security/취약점진단"
+    소스코드진단: "LocalLLM/01_Security/소스코드진단"
+    암호학: "LocalLLM/01_Security/암호학"
+    리버싱: "LocalLLM/01_Security/리버싱"
+    모바일진단: "LocalLLM/01_Security/모바일진단"
+    아이디어: "LocalLLM/02_Ideas/아이디어"
+    스크랩: "LocalLLM/02_Ideas/스크랩"
+    기타: "LocalLLM/01_Security/기타"  # archive 파이프라인 미분류 기본값
+
+  storage_domain_folders:
+    관제: "Security/관제"
+    네트워크: "Security/네트워크"
+    리눅스: "Security/인프라/운영체제"
+    AWS: "Security/AWS"
+    모의해킹: "Security/모의해킹"
+    취약점진단: "Security/취약점진단"
+    소스코드진단: "Security/소스코드진단"
+    암호학: "Security/암호학"
+    리버싱: "Security/리버싱"
+    모바일진단: "Security/모바일진단"
+    아이디어: "Ideas/아이디어"
+    스크랩: "Ideas/스크랩"
+    기타: "Security/기타"  # archive 파이프라인 미분류 기본값
+
+  moc_path: "LocalLLM/04_MOC"
+  activity_log: "00_activity_log.md"
+
+ideas:
+  merge_similarity_threshold: 0.90
+  min_notes_to_merge: 2
+  reorganize_on_health_check: true
+
+validation:
+  enabled: true
+  daily_limit: 50
+  batch_size: 10
+  perplexity_model: "sonar-pro"
+  claude_model: "claude-sonnet-4-6"
+  max_perplexity_queries: 2
+
+gap_analysis:
+  enabled: true
+  daily_limit: 5          # 하루 최대 생성 개념서 수
+  domains_per_run: 2      # 한 번 실행 시 분석할 도메인 수 (노트 적은 순)
+  gaps_per_domain: 3      # 도메인당 최대 gap 주제 수
+  perplexity_enabled: true  # Perplexity로 개념서 컨텍스트 보강

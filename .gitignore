@@ -1,0 +1,41 @@
+# Secrets
+.env
+
+# Runtime data (too large, machine-specific)
+data/
+Storage/
+*.db
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Claude internal
+.claude/
+
+# Internal docs
+ORCHESTRATION_HANDOVER.md
+
+# Logs
+*.log
+
+# Checkpoint files
+/tmp/*_checkpoint.txt
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
