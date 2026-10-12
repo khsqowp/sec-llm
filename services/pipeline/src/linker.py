@@ -1,5 +1,5 @@
 """
-Qdrant 벡터 검색 + [[Wiki Link]] 자동 삽입 + 백링크 업데이트
+Qdrant 벡터 검색 + 신규 노트의 [[Wiki Link]] 제안 (기존 파일 편집 금지)
 Hybrid Search (dense nomic-embed-text + BM25 sparse) + Chunking
 """
 import logging
@@ -83,8 +83,7 @@ class Linker:
                 needs_create = False
                 logger.debug("Qdrant 컬렉션 스키마 OK (hybrid dense+sparse)")
             else:
-                logger.info("구 스키마 감지 → 컬렉션 재생성 (hybrid 마이그레이션)")
-                self.client.delete_collection(COLLECTION)
+                raise RuntimeError("notes 컬렉션 스키마 불일치: 기존 데이터를 보존하고 수동 마이그레이션이 필요합니다")
 
         if needs_create:
             self.client.create_collection(
@@ -394,12 +393,17 @@ class Linker:
     def find_similar(
         self, content: str, threshold: float, exclude_paths: Optional[List[str]] = None
     ) -> List[dict]:
-        hits = self._hybrid_search(content, limit=20, exclude_paths=exclude_paths)
+        if threshold > 0.5:
+            vector = self.llm.embed(content)
+            hits = self._dense_search(vector, 20, exclude_paths) if vector else []
+        else:
+            hits = self._hybrid_search(content, limit=20, exclude_paths=exclude_paths)
         return [h for h in hits if h["score"] >= threshold]
 
     def check_duplicate(self, content: str, threshold: float = 0.90) -> Optional[dict]:
         """threshold 이상의 유사 노트가 있으면 반환, 없으면 None."""
-        hits = self._hybrid_search(content, limit=3)
+        vector = self.llm.embed(content)
+        hits = self._dense_search(vector, 3) if vector else []
         if hits and hits[0]["score"] >= threshold:
             return hits[0]
         return None
@@ -409,84 +413,25 @@ class Linker:
     _MAX_RELATED_LINKS = 20
 
     def insert_links_into_note(self, note_path: Path, suggested_links: List[str]) -> None:
-        if not suggested_links or not note_path.exists():
-            return
-        content = note_path.read_text(encoding="utf-8")
-        existing_links = set(re.findall(r"\[\[(.+?)\]\]", content))
-        link_section_marker = "## 연관 노트"
-        if link_section_marker in content:
-            sec_start = content.index(link_section_marker)
-            existing_count = len(re.findall(r"\[\[", content[sec_start:]))
-            if existing_count >= self._MAX_RELATED_LINKS:
-                return
-            slots = self._MAX_RELATED_LINKS - existing_count
-        else:
-            slots = self._MAX_RELATED_LINKS
-        new_links = [l for l in suggested_links if l not in existing_links][:slots]
-        if not new_links:
-            return
-        link_block = "\n".join(f"[[{l}]]" for l in new_links)
-        if link_section_marker in content:
-            content = content.replace(link_section_marker, f"{link_section_marker}\n{link_block}", 1)
-        else:
-            content = content.rstrip() + f"\n\n---\n\n## 연관 노트\n{link_block}\n"
-        content = re.sub(r'\n{3,}', '\n\n', content)
-        content = re.sub(r'^- unknown\s*$\n?', '', content, flags=re.MULTILINE | re.IGNORECASE)
-        content = re.sub(r'^unknown\s*$\n?', '', content, flags=re.MULTILINE | re.IGNORECASE)
-        note_path.write_text(content, encoding="utf-8")
-
-    # ── 백링크 ───────────────────────────────────────────
+        raise PermissionError("기존 vault 노트 수정 금지: 링크는 최초 생성 시 포함해야 합니다")
 
     def add_backlink(self, target_note_path: Path, source_title: str) -> None:
-        if not target_note_path.exists():
-            return
-        content = target_note_path.read_text(encoding="utf-8")
-        if f"[[{source_title}]]" in content:
-            return
-        marker = "## 연관 노트"
-        if marker in content:
-            sec_start = content.index(marker)
-            existing_count = len(re.findall(r"\[\[", content[sec_start:]))
-            if existing_count >= self._MAX_RELATED_LINKS:
-                return
-        backlink_block = f"[[{source_title}]]"
-        if marker in content:
-            content = content.replace(marker, f"{marker}\n{backlink_block}", 1)
-        else:
-            content = content.rstrip() + f"\n\n---\n\n## 연관 노트\n{backlink_block}\n"
-        content = re.sub(r'\n{3,}', '\n\n', content)
-        content = re.sub(r'^- unknown\s*$\n?', '', content, flags=re.MULTILINE | re.IGNORECASE)
-        content = re.sub(r'^unknown\s*$\n?', '', content, flags=re.MULTILINE | re.IGNORECASE)
-        target_note_path.write_text(content, encoding="utf-8")
+        raise PermissionError("기존 vault 노트 수정 금지: 자동 백링크 추가 불가")
 
     # ── 전체 링크 파이프라인 ─────────────────────────────
 
-    def link_note(
-        self,
-        note_path: Path,
-        note_title: str,
-        note_domain: str,
-        note_content: str,
-        all_notes: List[dict],
-    ) -> List[str]:
+    def suggest_note_links(self, note_title: str, note_content: str, all_notes: List[dict]) -> List[str]:
         llm_links = self.llm.suggest_links(note_content, all_notes)
-        # Qwen 언로드 → 240s Metal 회수 대기 (nomic 로드 전 macOS가 9.9GB 완전 반환)
-        # find_similar 제거: nomic 로드를 link_note에서 완전 배제 → precompute까지 nomic 미사용
-        # M3 Pro 18GB: Qwen 언로드 직후 nomic 로드 시 Docker Desktop이 SIGKILL → 240s 대기 필수
         self.llm.unload_model()
         all_titles = {n["title"] for n in all_notes}
-        llm_links = [l for l in llm_links if l in all_titles and l != note_title]
-        combined = list(dict.fromkeys(llm_links))
-        resolved = list(dict.fromkeys(
-            self._resolve_part_title(t, all_notes) for t in combined
+        return list(dict.fromkeys(
+            self._resolve_part_title(title, all_notes)
+            for title in llm_links if title in all_titles and title != note_title
         ))
-        self.insert_links_into_note(note_path, resolved)
-        source_stem = Path(note_path).stem
-        for title in combined:
-            target = self._find_note_path_by_title(title, all_notes)
-            if target:
-                self.add_backlink(Path(target), source_stem)
-        return resolved
+
+    def link_note(self, note_path: Path, note_title: str, note_domain: str,
+                  note_content: str, all_notes: List[dict]) -> List[str]:
+        raise PermissionError("기존 vault 노트 수정 금지: suggest_note_links로 생성 전에 링크를 선택하세요")
 
     def _find_note_path_by_title(self, title: str, all_notes: List[dict]) -> Optional[str]:
         for note in all_notes:
@@ -515,72 +460,12 @@ class Linker:
     # ── 전체 노트 재링크 ─────────────────────────────────
 
     def relink_all_notes(self, db, qdrant_only: bool = True) -> int:
-        all_notes = db.get_all_notes()
-        if not all_notes:
-            return 0
-        mode = "Qdrant전용" if qdrant_only else "LLM+Qdrant"
-        logger.info(f"전체 노트 재링크 시작: {len(all_notes)}개 노트 [{mode}]")
-        updated = 0
-        for note in all_notes:
-            path = Path(note["path"])
-            if not path.exists():
-                logger.debug(f"재링크 건너뜀 (파일 없음): {note['path']}")
-                continue
-            try:
-                content = path.read_text(encoding="utf-8")
-                if qdrant_only:
-                    # RRF fusion 점수 범위는 0~0.5 (cosine similarity 아님)
-                    # config.similarity_threshold(0.85)는 cosine용이므로 RRF에는 0.3 사용
-                    similar = self.find_similar(
-                        content,
-                        threshold=0.3,
-                        exclude_paths=[str(path)],
-                    )
-                    link_titles = [s["title"] for s in similar[:10] if s["title"] != note["title"]]
-                    if link_titles:
-                        resolved = list(dict.fromkeys(
-                            self._resolve_part_title(t, all_notes) for t in link_titles
-                        ))
-                        self.insert_links_into_note(path, resolved)
-                        source_name = Path(note["path"]).stem
-                        for rt in resolved:
-                            target = self._find_note_path_by_stem(rt, all_notes)
-                            if target:
-                                self.add_backlink(Path(target), source_name)
-                        link_titles = resolved
-                else:
-                    link_titles = self.link_note(path, note["title"], note["domain"], content, all_notes)
-                if link_titles:
-                    updated += 1
-                    logger.info(f"재링크: {note['title']} → {len(link_titles)}개 링크")
-            except Exception as e:
-                logger.warning(f"재링크 실패 [{note.get('title', '')}]: {e}")
-        logger.info(f"전체 노트 재링크 완료: {updated}/{len(all_notes)}개 업데이트")
-        sanitized = self.sanitize_all_notes(all_notes)
-        if sanitized:
-            logger.info(f"노트 정제 완료: {sanitized}개 파일 (빈줄/unknown 정리)")
-        return updated
+        logger.warning("기존 vault 노트 수정 금지: 전체 재링크 비활성화")
+        return 0
 
     def sanitize_all_notes(self, all_notes: list) -> int:
-        """모든 노트의 빈줄3+ / unknown 항목 일괄 정리."""
-        fixed = 0
-        for note in all_notes:
-            path = Path(note["path"])
-            if not path.exists():
-                continue
-            try:
-                content = path.read_text(encoding="utf-8")
-                cleaned = content
-                cleaned = re.sub(r'\[\[\[+', '[[', cleaned)
-                cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-                cleaned = re.sub(r'^- unknown\s*$\n?', '', cleaned, flags=re.MULTILINE | re.IGNORECASE)
-                cleaned = re.sub(r'^unknown\s*$\n?', '', cleaned, flags=re.MULTILINE | re.IGNORECASE)
-                if cleaned != content:
-                    path.write_text(cleaned, encoding="utf-8")
-                    fixed += 1
-            except Exception as e:
-                logger.debug(f"sanitize 건너뜀 [{note.get('title', '')}]: {e}")
-        return fixed
+        logger.warning("기존 vault 노트 수정 금지: 기존 노트 정제 비활성화")
+        return 0
 
     # ── 누락 색인 복구 ────────────────────────────────────
 
@@ -693,12 +578,8 @@ class Linker:
                     ))
                 if points:
                     self.client.upsert(collection_name=COLLECTION, points=points)
-                db.upsert_note(
+                db.update_qdrant_id(
                     note_path=note["path"],
-                    title=note["title"],
-                    domain=note["domain"],
-                    tags=[],
-                    source_file="",
                     qdrant_id=nd["note_id"],
                 )
                 count += 1

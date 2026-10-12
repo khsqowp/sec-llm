@@ -18,7 +18,7 @@ class ProcessingJob(Base):
     source_path = Column(String(1024), nullable=False)
     source_type = Column(String(16))          # 'file' | 'folder'
     domain = Column(String(64))
-    status = Column(String(16), default="pending")  # pending|processing|completed|failed
+    status = Column(String(16), default="pending")  # pending|processing|completed|failed|skipped
     created_notes = Column(Text)              # JSON list of note paths
     storage_path = Column(String(1024))
     error_message = Column(Text)
@@ -125,7 +125,7 @@ class Database:
                 if k == "created_notes" and isinstance(v, list):
                     v = json.dumps(v, ensure_ascii=False)
                 setattr(job, k, v)
-            if kwargs.get("status") in ("completed", "failed"):
+            if kwargs.get("status") in ("completed", "failed", "skipped"):
                 job.completed_at = datetime.utcnow()
             s.commit()
 
@@ -160,6 +160,16 @@ class Database:
                     qdrant_id=qdrant_id,
                 )
                 s.add(note)
+            s.commit()
+
+    def update_qdrant_id(self, note_path: str, qdrant_id: str) -> None:
+        """기존 노트의 색인 ID만 갱신하고 원본 메타데이터를 보존한다."""
+        with self.session() as s:
+            updated = s.query(NoteIndex).filter_by(note_path=note_path).update(
+                {NoteIndex.qdrant_id: qdrant_id}, synchronize_session=False
+            )
+            if updated != 1:
+                raise LookupError(f"색인 ID를 갱신할 노트가 없습니다: {note_path}")
             s.commit()
 
     def update_note_path(self, old_path: str, new_path: str) -> None:
