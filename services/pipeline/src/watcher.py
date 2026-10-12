@@ -21,7 +21,7 @@ IGNORE_NAMES = {".DS_Store", "README.md", "Thumbs.db", ".gitkeep"}
 IGNORE_PREFIXES = (".", "~$")
 
 # 파이프라인 서브폴더 (폴더 자체는 처리 안 하고 안의 파일만 처리)
-PIPELINE_SUBFOLDERS = {"ideas", "archive"}
+PIPELINE_SUBFOLDERS = {"ideas", "archive_localllm"}
 
 
 class InboxHandler(FileSystemEventHandler):
@@ -105,7 +105,7 @@ class InboxHandler(FileSystemEventHandler):
             rel = path.relative_to(self.config.inbox_path)
             parts = rel.parts
 
-            # 파이프라인 서브폴더(ideas/, archive/) 자체는 처리 대상 아님
+            # 파이프라인 서브폴더(ideas/, archive_localllm/) 자체는 처리 대상 아님
             if len(parts) == 1 and parts[0].lower() in PIPELINE_SUBFOLDERS and path.is_dir():
                 return False
 

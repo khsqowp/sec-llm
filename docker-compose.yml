@@ -11,6 +11,8 @@ services:
     platform: ${DOCKER_PLATFORM:-linux/arm64}
     container_name: dolphin-qdrant
     networks: [dolphin-net]
+    ports:
+      - "127.0.0.1:6333:6333"
     environment:
       QDRANT__OPTIMIZER__CPU_BUDGET: "1"
       QDRANT__OPTIMIZER__INDEXING_THRESHOLD: "50000"
@@ -64,7 +66,8 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - PYTHONUNBUFFERED=1
     volumes:
-      - ${VAULT_PATH}:/vault:ro
+      # Pipeline writes new files only; existing notes are protected by create-only code.
+      - ${VAULT_PATH}:/vault
       - ./Storage:/storage
       - ./config:/config:ro
       - /tmp/dolphin_libreoffice:/tmp/libreoffice
@@ -94,12 +97,15 @@ services:
       - POSTGRES_URL=postgresql://dolphin:${POSTGRES_PASSWORD}@postgres:5432/dolphin_brain
       - CHAT_MODEL=${CHAT_MODEL}
       - VAULT_PATH=/vault
+      - STORAGE_PATH=/storage
       - PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY}
+      - FASTEMBED_CACHE_PATH=/fastembed_cache
       - TZ=Asia/Seoul
       - PYTHONUNBUFFERED=1
     volumes:
       - ${VAULT_PATH}:/vault:ro
       - ./Storage:/storage
+      - ./data/fastembed:/fastembed_cache
     depends_on:
       qdrant:
         condition: service_healthy

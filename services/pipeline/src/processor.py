@@ -47,7 +47,7 @@ class Processor:
             self._process_single_file(path, pipeline=pipeline)
 
     def _detect_pipeline(self, path: Path) -> str:
-        """inbox/ideas/ → 'ideas', inbox/archive/ → 'security', 그 외 → 'security'"""
+        """inbox/ideas/ → 'ideas', inbox/archive_localllm/ → 'security', 그 외 → 'security'"""
         try:
             rel = path.relative_to(self.config.inbox_path)
             first = rel.parts[0].lower() if rel.parts else ""
@@ -68,7 +68,7 @@ class Processor:
         self.db.update_job(job_id, status="processing")
 
         all_created_notes: List[str] = []
-        folder_domain = "기타"  # archive 파이프라인 기본값 (Security/기타)
+        folder_domain = "기타"  # archive_localllm 파이프라인 기본값 (Security/기타)
 
         try:
             files = sorted(_collect_files(folder, self.config.skip_extensions))
@@ -79,7 +79,9 @@ class Processor:
                 notes = self._process_single_file(
                     file_path, parent_folder=folder, return_notes=True, pipeline=pipeline
                 )
-                all_created_notes.extend(notes or [])
+                if not notes:
+                    raise RuntimeError(f"폴더 내 파일 처리 실패 또는 노트 생성 없음: {file_path.name}")
+                all_created_notes.extend(notes)
 
             # 폴더 내 합본 생성 (유사도 기반)
             if len(all_created_notes) >= 2:
@@ -157,9 +159,15 @@ class Processor:
 
         try:
             # 파싱
-            text, file_type = parse_file(file_path)
+            text, file_type = parse_file(
+                file_path,
+                ollama_url=self.config.ollama_url,
+                vision_model=self.config.vision_model,
+            )
             if not text or text.startswith("[파싱 실패") or file_type == "unknown":
                 logger.warning(f"파싱 결과 없음: {file_path.name}")
+                if job_id:
+                    self.db.update_job(job_id, status="failed", error_message="파싱 결과 없음 또는 지원하지 않는 형식")
                 if return_notes:
                     return []
                 return []
@@ -171,15 +179,15 @@ class Processor:
                     logger.info(
                         f"중복 감지 ({dup['score']:.2f}): {file_path.name} ≈ '{dup['title']}' → 스킵"
                     )
+                    storage_dest = self.mover.move_to_storage(file_path, dup.get("domain", "기타"))
                     if job_id:
                         self.db.update_job(
                             job_id,
                             status="skipped",
                             domain=dup.get("domain", "기타"),
                             created_notes=[],
-                            storage_path="",
+                            storage_path=str(storage_dest),
                         )
-                    storage_dest = self.mover.move_to_storage(file_path, dup.get("domain", "기타"))
                     self.activity.log(
                         source_name=file_path.name,
                         domain=dup.get("domain", "기타"),
@@ -228,8 +236,12 @@ class Processor:
             # 기존 노트 목록 로드 (링크용)
             all_notes = self.db.get_all_notes()
 
-            # 링크는 linker.link_note()에서 단독 처리 (중복 호출 방지)
-            suggested_links = []
+            # 기존 노트를 수정하지 않고 최초 생성 본문에 링크 포함.
+            try:
+                suggested_links = self.linker.suggest_note_links(title, markdown, all_notes)
+            except Exception as link_err:
+                logger.warning(f"링크 제안 실패 [{title}]: {link_err}")
+                suggested_links = []
 
             # 키워드를 태그로 추출
             kw_tags = _extract_keywords(markdown) if file_type != "code" else []
@@ -247,36 +259,22 @@ class Processor:
             )
             created_notes = [str(p) for p in note_paths]
 
-            # 링크 삽입 (LLM) + note_index 저장
+            # 최초 생성에 링크를 포함한 노트의 note_index 저장
             # embed/Qdrant 인덱싱 완전 제거 — nomic+Qwen 동시 Metal 로드가 OOM 원인
             # Qdrant 인덱싱은 모든 파일 처리 완료 후 별도 reindex 스크립트에서 실행
             for note_path in note_paths:
-                note_content = note_path.read_text(encoding="utf-8")
-
                 # note_index 저장 (qdrant_id=NULL) — 재시작 시 중복 처리 방지
                 self.db.upsert_note(
                     note_path=str(note_path),
-                    title=title,
+                    title=note_path.stem,
                     domain=domain,
                     tags=doc_tags,
                     source_file=str(file_path),
                     qdrant_id=None,
                 )
 
-                # LLM 링크 제안 (Qwen 사용, embed 없음)
-                try:
-                    self.linker.link_note(
-                        note_path=note_path,
-                        note_title=title,
-                        note_domain=domain,
-                        note_content=note_content,
-                        all_notes=all_notes,
-                    )
-                except Exception as link_err:
-                    logger.warning(f"링크 삽입 실패 [{note_path.name}]: {link_err}")
-
                 # MOC 갱신
-                self.moc.update(domain, title)
+                self.moc.update(domain, note_path.stem)
 
             # 파일 단독 처리 시 Storage 이동
             if not parent_folder:
@@ -310,6 +308,7 @@ class Processor:
                     status="실패",
                     error=str(e),
                 )
+            return [] if return_notes else None
 
         if return_notes:
             return created_notes
@@ -373,33 +372,33 @@ class Processor:
         if len(titles) > 3:
             merged_title += f" 외 {len(titles) - 3}개"
 
+        all_notes = self.db.get_all_notes()
+        try:
+            links = self.linker.suggest_note_links(merged_title, merged_content, all_notes)
+        except Exception as link_err:
+            logger.warning(f"합본 링크 제안 실패: {link_err}")
+            links = []
         merged_paths = self.vault.write_merged_note(
             title=merged_title,
             domain=domain,
             content=merged_content,
             source_titles=titles,
-            links=[],
+            links=links,
         )
 
         all_notes = self.db.get_all_notes()
         for mp in merged_paths:
             embed_content = mp.read_text(encoding="utf-8")
-            qdrant_id = self.linker.reindex_note(mp, merged_title, domain, embed_content)
+            qdrant_id = self.linker.reindex_note(mp, mp.stem, domain, embed_content)
             self.db.upsert_note(
                 note_path=str(mp),
-                title=merged_title,
+                title=mp.stem,
                 domain=domain,
                 tags=["합본"],
                 source_file="merged",
                 qdrant_id=qdrant_id,
             )
-            self.linker.link_note(
-                note_path=mp,
-                note_title=merged_title,
-                note_domain=domain,
-                note_content=embed_content,
-                all_notes=all_notes,
-            )
+
 
         logger.info(f"합본 노트 생성: {merged_title}")
 

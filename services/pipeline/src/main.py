@@ -77,7 +77,7 @@ logger = logging.getLogger(__name__)
 
 IGNORE_NAMES = {".DS_Store", "README.md", "Thumbs.db", ".gitkeep"}
 IGNORE_PREFIXES = (".", "~$")
-PIPELINE_SUBFOLDERS = {"ideas", "archive"}
+PIPELINE_SUBFOLDERS = {"ideas", "archive_localllm"}
 
 
 def _process_existing_inbox(config, processor, busy: PipelineBusy):
@@ -87,7 +87,7 @@ def _process_existing_inbox(config, processor, busy: PipelineBusy):
         if p.name in IGNORE_NAMES or any(p.name.startswith(pf) for pf in IGNORE_PREFIXES):
             continue
         if p.is_dir() and p.name.lower() in PIPELINE_SUBFOLDERS:
-            # 파이프라인 서브폴더(ideas/, archive/) 자체는 처리하지 않고 내부 파일만 수집
+            # 파이프라인 서브폴더(ideas/, archive_localllm/) 자체는 처리하지 않고 내부 파일만 수집
             for child in sorted(p.iterdir()):
                 if child.name in IGNORE_NAMES or any(child.name.startswith(pf) for pf in IGNORE_PREFIXES):
                     continue
