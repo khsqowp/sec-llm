@@ -20,7 +20,15 @@ class FileMover:
         동명 파일 충돌 시 _1, _2 suffix 추가.
         반환: 이동된 최종 경로
         """
+        vault_root = self.config.vault_path.resolve()
+        source_root = source.resolve()
+        if source_root.is_relative_to(vault_root) or vault_root.is_relative_to(source_root):
+            raise PermissionError("기존 vault 파일/폴더 이동 금지")
         dest_folder = self.config.storage_folder_for_domain(domain)
+        if dest_folder.resolve().is_relative_to(vault_root):
+            raise PermissionError("vault 내부로 원본 파일 이동 금지")
+        if source.is_dir() and any(p.resolve().is_relative_to(vault_root) for p in source.rglob("*")):
+            raise PermissionError("vault 파일을 참조하는 폴더 이동 금지")
         dest_folder.mkdir(parents=True, exist_ok=True)
 
         dest = dest_folder / source.name

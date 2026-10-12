@@ -8,13 +8,15 @@ import json
 import logging
 import os
 import re
+import shutil
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import AsyncGenerator, List, Optional, Tuple
 
 import asyncpg
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,12 +29,14 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://host.docker.internal:11434")
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333")
 POSTGRES_URL = os.environ.get("POSTGRES_URL", "")
 VAULT_PATH = os.environ.get("VAULT_PATH", "/vault")
+STORAGE_PATH = os.environ.get("STORAGE_PATH", "/storage")
 PERPLEXITY_API_KEY = os.environ.get("PERPLEXITY_API_KEY", "")
 DEFAULT_MODEL = os.environ.get(
     "CHAT_MODEL",
     "hf.co/mradermacher/Qwen2.5-Coder-14B-Instruct-Uncensored-GGUF:Q4_K_M",
 )
-EMBEDDING_MODEL = "nomic-embed-text"
+FASTEMBED_CACHE_PATH = os.environ.get("FASTEMBED_CACHE_PATH", None)
+FASTEMBED_MODEL = "nomic-ai/nomic-embed-text-v1"
 NOTES_COLLECTION = "notes"
 PAYLOADS_COLLECTION = "ctf_payloads"
 SECURITY_KB_COLLECTION = "security_kb"
@@ -180,6 +184,110 @@ SYSTEM_PROMPTS = {
         "- NIST CSF: DE.CM-1, RS.RP-1\n"
         "- ISO 27001: A.16.1.5\n"
     ),
+    "remediator": (
+        "당신은 보안 조치방안 전문 AI 어시스턴트입니다. 개발자/보안담당자 시점에서 실질적인 해결방안을 제공합니다.\n\n"
+        "{context}"
+        "**조치방안 제공 원칙:**\n"
+        "- 상황을 정확히 파악한 뒤 즉시 적용 가능한 조치를 우선순위 순으로 제시한다\n"
+        "- 코드 수준의 수정사항은 반드시 Before/After 코드 블록으로 보여준다\n"
+        "- 설정 변경은 구체적인 파일 경로와 설정값을 명시한다\n"
+        "- 패치 불가 시 임시 완화(mitigation) 방법도 함께 제시한다\n"
+        "- 조치 후 검증 방법(테스트 명령어, 확인 포인트)을 포함한다\n\n"
+        "**응답 형식:**\n"
+        "## 문제 요약\n"
+        "(상황을 한 줄로 정리)\n\n"
+        "## 즉시 조치 (우선순위 순)\n"
+        "### 1. (조치명)\n"
+        "- 적용 방법, 코드/설정 예시\n\n"
+        "## 검증 방법\n"
+        "(테스트 명령어 또는 확인 방법)\n\n"
+        "## 장기 개선 권장사항\n"
+        "(근본 원인 해결 방향)\n\n"
+        "**응답 예시:**\n"
+        "---\n"
+        "## 문제 요약\n"
+        "사용자 입력이 PreparedStatement 없이 문자열 연결로 쿼리에 직접 삽입되어 SQL Injection 가능\n\n"
+        "## 즉시 조치 (우선순위 순)\n"
+        "### 1. PreparedStatement 전환\n"
+        "```python\n"
+        "# Before\n"
+        "query = f\"SELECT * FROM users WHERE id = {user_id}\"\n"
+        "cursor.execute(query)\n\n"
+        "# After\n"
+        "query = \"SELECT * FROM users WHERE id = %s\"\n"
+        "cursor.execute(query, (user_id,))\n"
+        "```\n\n"
+        "### 2. 입력 타입 검증 추가\n"
+        "```python\n"
+        "if not isinstance(user_id, int):\n"
+        "    raise ValueError(\"user_id must be integer\")\n"
+        "```\n\n"
+        "## 검증 방법\n"
+        "```bash\n"
+        "# 악성 입력으로 테스트\n"
+        "curl -X GET \"http://localhost/user?id=1 OR 1=1\"\n"
+        "# 응답에 다수 레코드 반환 시 여전히 취약\n"
+        "```\n\n"
+        "## 장기 개선 권장사항\n"
+        "ORM(SQLAlchemy/Django ORM) 도입으로 raw query 자체를 제거. 모든 DB 접근 레이어 감사.\n"
+        "---\n"
+    ),
+    "diagnostics": (
+        "당신은 시스템/서비스 진단 전문 AI 어시스턴트입니다. 문제 증상을 설명하면 확인해야 할 항목과 진단 방법을 체계적으로 안내합니다.\n\n"
+        "{context}"
+        "**진단 가이드 원칙:**\n"
+        "- 증상 기반으로 원인 후보를 좁혀나가는 단계별 확인 절차를 제공한다\n"
+        "- 각 확인 항목마다 실행 가능한 명령어나 확인 방법을 구체적으로 제시한다\n"
+        "- 확인 결과별 다음 단계를 분기하여 안내한다 (결과 A이면 → X 확인, 결과 B이면 → Y 확인)\n"
+        "- 빠른 확인부터 시작해 심층 분석 순으로 정렬한다\n"
+        "- 로그 파일 위치, 키 메시지 패턴, 모니터링 지점을 명시한다\n\n"
+        "**응답 형식:**\n"
+        "## 증상 분석\n"
+        "(가능한 원인 후보 목록)\n\n"
+        "## 진단 체크리스트\n"
+        "### Step 1. (빠른 확인)\n"
+        "```bash\n"
+        "(확인 명령어)\n"
+        "```\n"
+        "- 정상: (기대 출력)\n"
+        "- 이상: (다음 확인 단계)\n\n"
+        "## 추가 로그 확인\n"
+        "(관련 로그 파일 및 grep 패턴)\n\n"
+        "**응답 예시:**\n"
+        "---\n"
+        "## 증상 분석\n"
+        "가능한 원인: (1) upstream 앱 프로세스 크래시/재시작 (2) DB 커넥션 풀 고갈 (3) 메모리 부족 (4) 응답 타임아웃\n\n"
+        "## 진단 체크리스트\n"
+        "### Step 1. 프로세스 상태 확인 (30초)\n"
+        "```bash\n"
+        "systemctl status myapp\n"
+        "journalctl -u myapp --since \"10 min ago\" | tail -50\n"
+        "```\n"
+        "- 정상: `active (running)`, 재시작 없음\n"
+        "- 이상: `activating (auto-restart)` → Step 2로\n\n"
+        "### Step 2. DB 커넥션 상태 확인\n"
+        "```bash\n"
+        "# PostgreSQL 기준\n"
+        "psql -c \"SELECT count(*), state FROM pg_stat_activity GROUP BY state;\"\n"
+        "```\n"
+        "- 정상: `idle` 비율 높음, `active` < max_connections * 0.8\n"
+        "- 이상: `idle in transaction` 다수 또는 커넥션 포화 → 커넥션 풀 설정 조정\n\n"
+        "### Step 3. 메모리/시스템 자원\n"
+        "```bash\n"
+        "free -h\n"
+        "df -h\n"
+        "dmesg | grep -i \"oom\\|killed\" | tail -20\n"
+        "```\n"
+        "- OOM killer 로그 있으면 메모리 증설 또는 앱 메모리 누수 분석 필요\n\n"
+        "## 추가 로그 확인\n"
+        "```bash\n"
+        "# Nginx 에러 로그에서 502 패턴\n"
+        "grep \"502\" /var/log/nginx/error.log | tail -30\n"
+        "# 앱 로그에서 exception 패턴\n"
+        "grep -E \"ERROR|Exception|Traceback\" /var/log/myapp/app.log | tail -50\n"
+        "```\n"
+        "---\n"
+    ),
 }
 
 # ── Tool 정의 ──────────────────────────────────────────────────────────────────
@@ -277,12 +385,12 @@ _TOOL_SEARCH_SECURITY_KB = {
                 "category": {
                     "type": "string",
                     "description": (
-                        "카테고리 필터 (선택사항): "
-                        "advisory_go, advisory_python, advisory_rust, advisory_ruby, "
-                        "static_analysis, vuln_env, owasp, crypto, supply_chain, "
-                        "ai_security, cloud_security, container_security, iac_security, "
-                        "compliance, threat_intel, vulnerability, framework_security, "
-                        "best_practices, auth, mobile_security, general"
+                        "카테고리 필터 (선택사항, 정확한 값만 사용): "
+                        "advisory_go, advisory_python, advisory_rust, "
+                        "static_analysis, ai_security, cloud_security, "
+                        "container_security, mobile_security, owasp, owasp_top10, "
+                        "pentest_db, pentest_os, general, threat_intel, vuln_env, "
+                        "compliance, vulnerability"
                     ),
                 },
             },
@@ -295,10 +403,37 @@ TOOLS_BY_MODE: dict = {
     "general": [_TOOL_SEARCH_WEB, _TOOL_RUN_PYTHON, _TOOL_DECODE_BASE64],
     "rag":     [_TOOL_SEARCH_WEB, _TOOL_SEARCH_NOTES, _TOOL_SEARCH_SECURITY_KB, _TOOL_RUN_PYTHON],
     "ctf":     [_TOOL_SEARCH_WEB, _TOOL_RUN_PYTHON, _TOOL_DECODE_BASE64, _TOOL_HASH_LOOKUP, _TOOL_SEARCH_NOTES, _TOOL_SEARCH_SECURITY_KB],
-    "pentest": [_TOOL_SEARCH_WEB, _TOOL_SEARCH_SECURITY_KB, _TOOL_RUN_PYTHON, _TOOL_DECODE_BASE64],
-    "bypass":  [_TOOL_SEARCH_WEB, _TOOL_SEARCH_SECURITY_KB, _TOOL_RUN_PYTHON, _TOOL_DECODE_BASE64, _TOOL_SEARCH_NOTES],
-    "threat":  [_TOOL_SEARCH_WEB, _TOOL_SEARCH_SECURITY_KB, _TOOL_RUN_PYTHON],
+    "pentest": [_TOOL_SEARCH_WEB, _TOOL_RUN_PYTHON, _TOOL_DECODE_BASE64],
+    "bypass":  [_TOOL_SEARCH_WEB, _TOOL_RUN_PYTHON, _TOOL_DECODE_BASE64, _TOOL_SEARCH_NOTES],
+    "threat":  [_TOOL_SEARCH_WEB, _TOOL_RUN_PYTHON],
 }
+
+# ── Dense embedder (lazy, fastembed) ──────────────────────────────────────────
+
+_dense_embedder = None
+
+
+def _get_dense_embedder():
+    global _dense_embedder
+    if _dense_embedder is None:
+        from fastembed import TextEmbedding
+        logger.info("Dense embedder 초기화 중...")
+        kwargs = {"model_name": FASTEMBED_MODEL}
+        if FASTEMBED_CACHE_PATH:
+            kwargs["cache_dir"] = FASTEMBED_CACHE_PATH
+        _dense_embedder = TextEmbedding(**kwargs)
+        logger.info("Dense embedder 준비 완료")
+    return _dense_embedder
+
+
+def _embed_sync(text: str) -> Optional[List[float]]:
+    try:
+        embedder = _get_dense_embedder()
+        return list(embedder.embed([text]))[0].tolist()
+    except Exception as e:
+        logger.warning(f"Embed error: {e}")
+        return None
+
 
 # ── Sparse encoder (lazy) ──────────────────────────────────────────────────────
 
@@ -365,6 +500,7 @@ async def init_db():
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
+        await conn.execute("ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS owner_id TEXT")
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS chat_messages (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -480,7 +616,8 @@ async def startup():
         await init_payload_collection()
     except Exception as e:
         logger.warning(f"Payload collection init failed: {e}")
-    # 백그라운드에서 sparse encoder 예열
+    # 백그라운드에서 embedder 예열
+    asyncio.create_task(asyncio.to_thread(_get_dense_embedder))
     asyncio.create_task(asyncio.to_thread(_get_sparse))
 
 
@@ -520,17 +657,7 @@ class PayloadCreate(BaseModel):
 # ── RAG helpers ────────────────────────────────────────────────────────────────
 
 async def _embed(text: str) -> Optional[List[float]]:
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{OLLAMA_URL}/api/embed",
-                json={"model": EMBEDDING_MODEL, "input": text},
-            )
-            resp.raise_for_status()
-            return resp.json()["embeddings"][0]
-    except Exception as e:
-        logger.warning(f"Embed error: {e}")
-        return None
+    return await asyncio.to_thread(_embed_sync, text)
 
 
 async def _hyde(query: str) -> str:
@@ -656,7 +783,7 @@ async def _qdrant_search_security_kb(
     for p in points:
         payload = p.get("payload", {})
         results.append({
-            "title": payload.get("filename", ""),
+            "title": payload.get("filename") or Path(payload.get("source", "")).name,
             "path": payload.get("source", ""),
             "content": payload.get("text", ""),
             "chunk_idx": payload.get("chunk_index", 0),
@@ -669,8 +796,8 @@ async def _qdrant_search_security_kb(
 
 def _rerank_flashrank(query: str, chunks: List[dict], top_k: int = 3) -> List[dict]:
     """Flashrank cross-encoder로 top_k 재정렬."""
-    if len(chunks) <= top_k:
-        return chunks
+    if not chunks:
+        return []
     ranker = _get_ranker()
     if ranker is None:
         return chunks[:top_k]
@@ -679,7 +806,7 @@ def _rerank_flashrank(query: str, chunks: List[dict], top_k: int = 3) -> List[di
         passages = [{"id": i, "text": c.get("content", "")[:500]} for i, c in enumerate(chunks)]
         request = RerankRequest(query=query, passages=passages)
         results = ranker.rerank(request)
-        reranked = [chunks[r.id] for r in results[:top_k]]
+        reranked = [chunks[r["id"]] for r in results[:top_k]]
         return reranked
     except Exception as e:
         logger.warning(f"Flashrank 재정렬 실패: {e}")
@@ -699,26 +826,30 @@ async def _build_rag_context(
 
     # 모드별 security_kb 카테고리 필터 (메인 카테고리 + 보조 카테고리)
     _KB_MAIN: dict = {
-        "pentest": None,          # 전체
-        "bypass":  "owasp",
-        "threat":  "threat_intel",
-        "ctf":     "vuln_env",
-        "rag":     None,
+        "pentest":     None,
+        "bypass":      "owasp",
+        "threat":      "threat_intel",
+        "ctf":         "vuln_env",
+        "rag":         None,
+        "remediator":  None,
+        "diagnostics": None,
     }
     # 보조 카테고리: 메인 외에 추가로 검색할 카테고리
     _KB_AUX: dict = {
-        "pentest": ["vulnerability", "advisory_go", "advisory_python"],
-        "bypass":  ["vulnerability"],
-        "threat":  ["compliance"],
-        "ctf":     ["owasp"],
-        "rag":     [],
+        "pentest":     ["vulnerability", "advisory_go", "advisory_python"],
+        "bypass":      ["vulnerability"],
+        "threat":      ["compliance"],
+        "ctf":         ["owasp"],
+        "rag":         [],
+        "remediator":  ["vulnerability", "owasp", "advisory_go", "advisory_python"],
+        "diagnostics": ["vulnerability", "compliance"],
     }
 
     # 병렬 검색: 모드별로 필요한 검색만 실행
     gather_coros = []
     idx_map: dict = {}
 
-    if mode in ("rag", "ctf"):
+    if mode in ("rag", "ctf", "remediator", "diagnostics"):
         idx_map["notes"] = len(gather_coros)
         gather_coros.append(_qdrant_search_hybrid(hyde_doc, NOTES_COLLECTION, limit=10))
 
@@ -754,7 +885,7 @@ async def _build_rag_context(
     try:
         reranked = await asyncio.to_thread(_rerank_flashrank, query, all_hits, 8)
     except Exception:
-        reranked = all_hits[:4]
+        reranked = all_hits[:8]
 
     # 중복 청크 제거 (같은 note_id에서 여러 청크가 나올 경우 상위 1개만)
     seen_note_ids: set = set()
@@ -1111,44 +1242,86 @@ async def _stream_ollama(
         asyncio.create_task(_save_message(session_id, "assistant", "".join(accumulated)))
 
 
+def _is_admin_header(x_orchestration_admin: Optional[str]) -> bool:
+    return (x_orchestration_admin or "").lower() == "true"
+
+
+def _can_access(session_owner_id: Optional[str], requester_user_id: Optional[str], is_admin: bool) -> bool:
+    if is_admin:
+        return True
+    if not requester_user_id:
+        # Legacy/unauthenticated caller (e.g. bundled static UI that sends no
+        # X-Orchestration-User header): only allow access to sessions that have
+        # no owner assigned (legacy single-user sessions). Sessions that are
+        # already owned by someone remain protected.
+        return session_owner_id is None
+    return session_owner_id == requester_user_id
+
+
 # ── Session endpoints ──────────────────────────────────────────────────────────
 
 @app.get("/api/sessions")
-async def list_sessions():
+async def list_sessions(
+    x_orchestration_user: Optional[str] = Header(None),
+    x_orchestration_admin: Optional[str] = Header(None),
+):
     pool = await get_pool()
     if not pool:
         return {"sessions": []}
+    is_admin = _is_admin_header(x_orchestration_admin)
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT id, title, mode, model, created_at, updated_at "
-            "FROM chat_sessions ORDER BY updated_at DESC LIMIT 50"
-        )
+        if is_admin:
+            rows = await conn.fetch(
+                "SELECT id, title, mode, model, owner_id, created_at, updated_at "
+                "FROM chat_sessions ORDER BY updated_at DESC LIMIT 50"
+            )
+        elif x_orchestration_user:
+            rows = await conn.fetch(
+                "SELECT id, title, mode, model, owner_id, created_at, updated_at "
+                "FROM chat_sessions WHERE owner_id = $1 ORDER BY updated_at DESC LIMIT 50",
+                x_orchestration_user,
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT id, title, mode, model, owner_id, created_at, updated_at "
+                "FROM chat_sessions WHERE owner_id IS NULL ORDER BY updated_at DESC LIMIT 50"
+            )
         return {"sessions": [dict(r) for r in rows]}
 
 
 @app.post("/api/sessions", status_code=201)
-async def create_session(body: SessionCreate):
+async def create_session(
+    body: SessionCreate,
+    x_orchestration_user: Optional[str] = Header(None),
+):
     pool = await get_pool()
     if not pool:
         return {"id": str(uuid.uuid4()), "title": body.title, "mode": body.mode, "model": DEFAULT_MODEL}
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "INSERT INTO chat_sessions (title, mode, model) VALUES ($1, $2, $3) RETURNING *",
-            body.title, body.mode, DEFAULT_MODEL,
+            "INSERT INTO chat_sessions (title, mode, model, owner_id) VALUES ($1, $2, $3, $4) RETURNING *",
+            body.title, body.mode, DEFAULT_MODEL, x_orchestration_user,
         )
         return dict(row)
 
 
 @app.get("/api/sessions/{session_id}")
-async def get_session(session_id: str):
+async def get_session(
+    session_id: str,
+    x_orchestration_user: Optional[str] = Header(None),
+    x_orchestration_admin: Optional[str] = Header(None),
+):
     pool = await get_pool()
     if not pool:
         raise HTTPException(503, "DB unavailable")
+    is_admin = _is_admin_header(x_orchestration_admin)
     async with pool.acquire() as conn:
         session = await conn.fetchrow(
             "SELECT * FROM chat_sessions WHERE id = $1::uuid", session_id
         )
         if not session:
+            raise HTTPException(404, "Session not found")
+        if not _can_access(session["owner_id"], x_orchestration_user, is_admin):
             raise HTTPException(404, "Session not found")
         messages = await conn.fetch(
             "SELECT role, content, created_at FROM chat_messages "
@@ -1159,11 +1332,22 @@ async def get_session(session_id: str):
 
 
 @app.patch("/api/sessions/{session_id}")
-async def update_session(session_id: str, body: SessionUpdate):
+async def update_session(
+    session_id: str,
+    body: SessionUpdate,
+    x_orchestration_user: Optional[str] = Header(None),
+    x_orchestration_admin: Optional[str] = Header(None),
+):
     pool = await get_pool()
     if not pool:
         return {"ok": True}
+    is_admin = _is_admin_header(x_orchestration_admin)
     async with pool.acquire() as conn:
+        session = await conn.fetchrow(
+            "SELECT owner_id FROM chat_sessions WHERE id = $1::uuid", session_id
+        )
+        if not session or not _can_access(session["owner_id"], x_orchestration_user, is_admin):
+            raise HTTPException(404, "Session not found")
         if body.title is not None:
             await conn.execute(
                 "UPDATE chat_sessions SET title = $1, updated_at = NOW() WHERE id = $2::uuid",
@@ -1178,25 +1362,42 @@ async def update_session(session_id: str, body: SessionUpdate):
 
 
 @app.delete("/api/sessions/{session_id}", status_code=204)
-async def delete_session(session_id: str):
+async def delete_session(
+    session_id: str,
+    x_orchestration_user: Optional[str] = Header(None),
+    x_orchestration_admin: Optional[str] = Header(None),
+):
     pool = await get_pool()
     if not pool:
         return
+    is_admin = _is_admin_header(x_orchestration_admin)
     async with pool.acquire() as conn:
+        session = await conn.fetchrow(
+            "SELECT owner_id FROM chat_sessions WHERE id = $1::uuid", session_id
+        )
+        if not session or not _can_access(session["owner_id"], x_orchestration_user, is_admin):
+            raise HTTPException(404, "Session not found")
         await conn.execute("DELETE FROM chat_sessions WHERE id = $1::uuid", session_id)
 
 
 @app.post("/api/sessions/{session_id}/export")
-async def export_session(session_id: str):
+async def export_session(
+    session_id: str,
+    x_orchestration_user: Optional[str] = Header(None),
+    x_orchestration_admin: Optional[str] = Header(None),
+):
     pool = await get_pool()
     if not pool:
         raise HTTPException(503, "DB unavailable")
 
+    is_admin = _is_admin_header(x_orchestration_admin)
     async with pool.acquire() as conn:
         session = await conn.fetchrow(
             "SELECT * FROM chat_sessions WHERE id = $1::uuid", session_id
         )
         if not session:
+            raise HTTPException(404, "Session not found")
+        if not _can_access(session["owner_id"], x_orchestration_user, is_admin):
             raise HTTPException(404, "Session not found")
         messages = await conn.fetch(
             "SELECT role, content, created_at FROM chat_messages "
@@ -1232,15 +1433,15 @@ async def export_session(session_id: str):
         lines.append("")
 
     content = "\n".join(lines)
-    inbox_path = os.path.join(VAULT_PATH, "00_inbox")
+    inbox_path = os.path.join(STORAGE_PATH, "inbox")
     safe_title = "".join(c for c in title if c.isalnum() or c in " _-").strip().replace(" ", "_")[:30]
-    ts = datetime.now().strftime("%H%M%S")
+    ts = datetime.now().strftime("%H%M%S") + "_" + uuid.uuid4().hex[:8]
     filename = f"대화_{safe_title}_{date_str}_{ts}.md"
     filepath = os.path.join(inbox_path, filename)
 
     try:
         os.makedirs(inbox_path, exist_ok=True)
-        with open(filepath, "w", encoding="utf-8") as f:
+        with open(filepath, "x", encoding="utf-8") as f:
             f.write(content)
         return {"ok": True, "file": filename}
     except Exception as e:
@@ -1250,10 +1451,25 @@ async def export_session(session_id: str):
 # ── Chat endpoint ──────────────────────────────────────────────────────────────
 
 @app.post("/api/chat")
-async def chat(req: ChatRequest):
+async def chat(
+    req: ChatRequest,
+    x_orchestration_user: Optional[str] = Header(None),
+    x_orchestration_admin: Optional[str] = Header(None),
+):
     model = req.model or DEFAULT_MODEL
     mode = req.mode or "general"
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
+
+    if req.session_id:
+        pool = await get_pool()
+        if pool:
+            is_admin = _is_admin_header(x_orchestration_admin)
+            async with pool.acquire() as conn:
+                session = await conn.fetchrow(
+                    "SELECT owner_id FROM chat_sessions WHERE id = $1::uuid", req.session_id
+                )
+            if not session or not _can_access(session["owner_id"], x_orchestration_user, is_admin):
+                raise HTTPException(404, "Session not found")
 
     last_user = next(
         (m["content"] for m in reversed(messages) if m["role"] == "user"), ""
@@ -1296,14 +1512,24 @@ async def chat(req: ChatRequest):
 async def search_conversations(
     q: str = Query(..., min_length=1),
     session_id: Optional[str] = Query(None),
+    x_orchestration_user: Optional[str] = Header(None),
+    x_orchestration_admin: Optional[str] = Header(None),
 ):
     """전체 대화에서 PostgreSQL 전문 검색."""
     pool = await get_pool()
     if not pool:
         raise HTTPException(503, "DB unavailable")
 
+    is_admin = _is_admin_header(x_orchestration_admin)
+
     async with pool.acquire() as conn:
         if session_id:
+            if not is_admin:
+                session = await conn.fetchrow(
+                    "SELECT owner_id FROM chat_sessions WHERE id = $1::uuid", session_id
+                )
+                if not session or not _can_access(session["owner_id"], x_orchestration_user, is_admin):
+                    raise HTTPException(404, "Session not found")
             rows = await conn.fetch(
                 """
                 SELECT m.id, m.session_id, s.title as session_title,
@@ -1317,17 +1543,44 @@ async def search_conversations(
                 session_id, f"%{q}%",
             )
         else:
-            rows = await conn.fetch(
-                """
-                SELECT m.id, m.session_id, s.title as session_title,
-                       m.role, m.content, m.created_at
-                FROM chat_messages m
-                JOIN chat_sessions s ON s.id = m.session_id
-                WHERE m.content ILIKE $1
-                ORDER BY m.created_at DESC LIMIT 30
-                """,
-                f"%{q}%",
-            )
+            if is_admin:
+                rows = await conn.fetch(
+                    """
+                    SELECT m.id, m.session_id, s.title as session_title,
+                           m.role, m.content, m.created_at
+                    FROM chat_messages m
+                    JOIN chat_sessions s ON s.id = m.session_id
+                    WHERE m.content ILIKE $1
+                    ORDER BY m.created_at DESC LIMIT 30
+                    """,
+                    f"%{q}%",
+                )
+            elif x_orchestration_user:
+                rows = await conn.fetch(
+                    """
+                    SELECT m.id, m.session_id, s.title as session_title,
+                           m.role, m.content, m.created_at
+                    FROM chat_messages m
+                    JOIN chat_sessions s ON s.id = m.session_id
+                    WHERE m.content ILIKE $1
+                      AND s.owner_id = $2
+                    ORDER BY m.created_at DESC LIMIT 30
+                    """,
+                    f"%{q}%", x_orchestration_user,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT m.id, m.session_id, s.title as session_title,
+                           m.role, m.content, m.created_at
+                    FROM chat_messages m
+                    JOIN chat_sessions s ON s.id = m.session_id
+                    WHERE m.content ILIKE $1
+                      AND s.owner_id IS NULL
+                    ORDER BY m.created_at DESC LIMIT 30
+                    """,
+                    f"%{q}%",
+                )
 
     results = []
     for r in rows:
@@ -1456,6 +1709,217 @@ async def health():
 @app.get("/")
 async def index():
     return FileResponse("static/index.html")
+
+
+@app.get("/brain")
+async def brain_page():
+    return FileResponse("static/brain.html")
+
+
+# ── 2nd Brain 엔드포인트 ────────────────────────────────────────────────────────
+
+@app.post("/api/brain/upload")
+async def brain_upload(file: UploadFile = File(...)):
+    """파일을 inbox에 업로드. pipeline이 자동으로 처리해 2nd brain에 추가."""
+    inbox = Path(STORAGE_PATH) / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+
+    # 안전한 파일명 (경로 순회 방지)
+    safe_name = Path(file.filename or "").name
+    if not safe_name or safe_name.startswith("."):
+        raise HTTPException(400, "유효하지 않은 파일명")
+
+    dest = inbox / safe_name
+    # 동명 파일은 타임스탬프 접두사 추가
+    if dest.exists():
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        dest = inbox / f"{ts}_{safe_name}"
+
+    try:
+        while True:
+            try:
+                with dest.open("xb") as f:
+                    shutil.copyfileobj(file.file, f)
+                break
+            except FileExistsError:
+                dest = inbox / f"{uuid.uuid4().hex}_{safe_name}"
+    except Exception as e:
+        raise HTTPException(500, f"파일 저장 실패: {e}")
+
+    return {"status": "queued", "filename": dest.name, "size": dest.stat().st_size}
+
+
+@app.get("/api/brain/jobs")
+async def brain_jobs(limit: int = Query(50, ge=1, le=200)):
+    """처리 작업 목록. 파이프라인 처리 상태 확인용."""
+    pool = await get_pool()
+    if not pool:
+        raise HTTPException(503, "DB unavailable")
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, source_path, domain, status, created_notes, error_message, "
+            "created_at, completed_at "
+            "FROM processing_jobs ORDER BY created_at DESC LIMIT $1",
+            limit,
+        )
+    jobs = []
+    for r in rows:
+        row = dict(r)
+        if row.get("created_notes"):
+            try:
+                row["created_notes"] = json.loads(row["created_notes"])
+            except Exception:
+                pass
+        jobs.append(row)
+    return {"jobs": jobs, "total": len(jobs)}
+
+
+@app.get("/api/brain/notes")
+async def brain_notes(
+    domain: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """노트 목록. 도메인 필터 지원."""
+    pool = await get_pool()
+    if not pool:
+        raise HTTPException(503, "DB unavailable")
+    async with pool.acquire() as conn:
+        if domain:
+            rows = await conn.fetch(
+                "SELECT id, note_path, title, domain, tags, source_file, created_at "
+                "FROM note_index WHERE domain = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+                domain, limit, offset,
+            )
+            total = await conn.fetchval(
+                "SELECT COUNT(*) FROM note_index WHERE domain = $1", domain
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT id, note_path, title, domain, tags, source_file, created_at "
+                "FROM note_index ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+                limit, offset,
+            )
+            total = await conn.fetchval("SELECT COUNT(*) FROM note_index")
+
+    notes = []
+    for r in rows:
+        row = dict(r)
+        if row.get("tags"):
+            try:
+                row["tags"] = json.loads(row["tags"])
+            except Exception:
+                pass
+        notes.append(row)
+
+    # 도메인 목록 (사이드바용)
+    async with pool.acquire() as conn:
+        domain_rows = await conn.fetch(
+            "SELECT domain, COUNT(*) as cnt FROM note_index GROUP BY domain ORDER BY cnt DESC"
+        )
+    domains = [{"domain": r["domain"], "count": r["cnt"]} for r in domain_rows]
+
+    return {"notes": notes, "total": total, "domains": domains}
+
+
+def _vault_note_path(value: str) -> Path:
+    root = Path(VAULT_PATH).resolve()
+    path = Path(value)
+    candidate = path.resolve() if path.is_absolute() else (root / path).resolve()
+    if not candidate.is_relative_to(root):
+        raise HTTPException(400, "vault 외부 노트 경로")
+    return candidate
+
+
+@app.get("/api/brain/notes/{note_id}")
+async def brain_note_detail(note_id: int):
+    """노트 상세 내용. vault 파일 읽기."""
+    pool = await get_pool()
+    if not pool:
+        raise HTTPException(503, "DB unavailable")
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, note_path, title, domain, tags, source_file, qdrant_id, "
+            "created_at, updated_at, validation_verdict "
+            "FROM note_index WHERE id = $1",
+            note_id,
+        )
+    if not row:
+        raise HTTPException(404, "노트 없음")
+
+    note = dict(row)
+    if note.get("tags"):
+        try:
+            note["tags"] = json.loads(note["tags"])
+        except Exception:
+            pass
+
+    # vault에서 실제 내용 읽기
+    note_path = _vault_note_path(note["note_path"])
+    content = ""
+    if note_path.exists():
+        try:
+            content = note_path.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            content = f"[파일 읽기 실패: {e}]"
+    else:
+        content = "[파일을 찾을 수 없음]"
+
+    note["content"] = content
+    return note
+
+
+@app.get("/api/brain/graph")
+async def brain_graph(domain: Optional[str] = Query(None)):
+    """D3.js force graph용 노드/엣지 데이터. wikilink 기반 연결."""
+    pool = await get_pool()
+    if not pool:
+        raise HTTPException(503, "DB unavailable")
+
+    async with pool.acquire() as conn:
+        if domain:
+            rows = await conn.fetch(
+                "SELECT id, note_path, title, domain FROM note_index WHERE domain = $1",
+                domain,
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT id, note_path, title, domain FROM note_index LIMIT 500"
+            )
+
+    nodes = []
+    title_to_id = {}
+    for r in rows:
+        nodes.append({"id": r["id"], "title": r["title"] or "", "domain": r["domain"] or ""})
+        if r["title"]:
+            title_to_id[r["title"]] = r["id"]
+
+    # wikilink 파싱으로 엣지 생성
+    edges = []
+    wikilink_re = re.compile(r"\[\[([^\[\]|#]+?)(?:[|#][^\[\]]*)?\]\]")
+    seen_edges: set = set()
+
+    for r in rows:
+        try:
+            note_path = _vault_note_path(r["note_path"])
+        except HTTPException:
+            continue
+        if not note_path.exists():
+            continue
+        try:
+            content = note_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        for m in wikilink_re.finditer(content):
+            target_title = m.group(1).strip()
+            target_id = title_to_id.get(target_title)
+            if target_id and target_id != r["id"]:
+                edge_key = (min(r["id"], target_id), max(r["id"], target_id))
+                if edge_key not in seen_edges:
+                    seen_edges.add(edge_key)
+                    edges.append({"source": r["id"], "target": target_id})
+
+    return {"nodes": nodes, "edges": edges}
 
 
 app.mount("/static", StaticFiles(directory="static"), name="static")

@@ -20,22 +20,32 @@ CODE_LANG_MAP = {
 }
 
 
-def parse_file(file_path: Path) -> Tuple[str, str]:
+def parse_file(
+    file_path: Path,
+    ollama_url: str = "http://host.docker.internal:11434",
+    vision_model: str = "llava:7b",
+) -> Tuple[str, str]:
     """
     파일을 파싱하여 (텍스트, 파일유형) 반환.
     파일유형: 'document' | 'code' | 'image' | 'data' | 'unknown'
+    문서(PDF/DOCX/XLSX/PPTX): markitdown 먼저 시도, 실패 시 기존 파서 fallback.
+    이미지: Ollama vision 먼저 시도, 실패 시 pytesseract fallback.
     """
     ext = file_path.suffix.lower()
 
     try:
         if ext == ".pdf":
-            return _parse_pdf(file_path), "document"
+            text = _parse_with_markitdown(file_path) or _parse_pdf(file_path)
+            return text, "document"
         elif ext == ".docx":
-            return _parse_docx(file_path), "document"
+            text = _parse_with_markitdown(file_path) or _parse_docx(file_path)
+            return text, "document"
         elif ext == ".xlsx":
-            return _parse_xlsx(file_path), "document"
+            text = _parse_with_markitdown(file_path) or _parse_xlsx(file_path)
+            return text, "document"
         elif ext == ".pptx":
-            return _parse_pptx(file_path), "document"
+            text = _parse_with_markitdown(file_path) or _parse_pptx(file_path)
+            return text, "document"
         elif ext == ".hwp":
             return _parse_hwp(file_path), "document"
         elif ext == ".sqlite3" or ext == ".db":
@@ -45,7 +55,7 @@ def parse_file(file_path: Path) -> Tuple[str, str]:
         elif ext in CODE_LANG_MAP:
             return file_path.read_text(encoding="utf-8", errors="replace"), "code"
         elif ext in (".jpg", ".jpeg", ".png"):
-            return _parse_image(file_path), "image"
+            return _parse_image(file_path, ollama_url, vision_model), "image"
         else:
             return "", "unknown"
     except Exception as e:
@@ -58,6 +68,21 @@ def get_code_language(file_path: Path) -> str:
 
 
 # ── 개별 파서 ─────────────────────────────────────────────
+
+def _parse_with_markitdown(path: Path) -> str:
+    """markitdown으로 문서를 마크다운 텍스트로 변환. 실패 시 빈 문자열 반환."""
+    try:
+        from markitdown import MarkItDown
+        md = MarkItDown()
+        result = md.convert(str(path))
+        text = result.text_content.strip() if result.text_content else ""
+        if text:
+            logger.debug(f"markitdown 변환 성공: {path.name} ({len(text)}자)")
+        return text
+    except Exception as e:
+        logger.debug(f"markitdown 실패, fallback 사용: {path.name} ({e})")
+        return ""
+
 
 def _parse_pdf(path: Path) -> str:
     import pdfplumber
@@ -208,7 +233,52 @@ def _parse_hwp(path: Path) -> str:
             return f"[HWP 변환 오류: {e}]"
 
 
-def _parse_image(path: Path) -> str:
+def _parse_image(
+    path: Path,
+    ollama_url: str = "http://host.docker.internal:11434",
+    vision_model: str = "llava:7b",
+) -> str:
+    """이미지 분석: Ollama vision 먼저 시도, 실패 시 pytesseract OCR fallback."""
+    text = _parse_image_with_vision(path, ollama_url, vision_model)
+    if text:
+        return text
+    return _parse_image_with_ocr(path)
+
+
+def _parse_image_with_vision(path: Path, ollama_url: str, vision_model: str) -> str:
+    """Ollama vision API로 이미지 분석. 실패 또는 vision 모델 없으면 빈 문자열 반환."""
+    import base64
+    import requests
+
+    try:
+        with open(path, "rb") as f:
+            image_b64 = base64.b64encode(f.read()).decode()
+
+        response = requests.post(
+            f"{ollama_url}/api/generate",
+            json={
+                "model": vision_model,
+                "prompt": (
+                    "이 이미지의 내용을 상세하게 한국어로 분석해주세요. "
+                    "텍스트가 있으면 모두 추출하고, 도표/차트/다이어그램이 있으면 설명해주세요."
+                ),
+                "images": [image_b64],
+                "stream": False,
+            },
+            timeout=120,
+        )
+        response.raise_for_status()
+        result = response.json().get("response", "").strip()
+        if result:
+            logger.debug(f"vision 분석 성공: {path.name}")
+        return result
+    except Exception as e:
+        logger.debug(f"vision 분석 실패, OCR fallback: {path.name} ({e})")
+        return ""
+
+
+def _parse_image_with_ocr(path: Path) -> str:
+    """pytesseract OCR로 이미지에서 텍스트 추출."""
     import pytesseract
     from PIL import Image
 

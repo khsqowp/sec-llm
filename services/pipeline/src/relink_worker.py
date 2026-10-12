@@ -1,9 +1,6 @@
 """
-relink_all_notes() subprocess worker.
-
-main process가 ONNX를 로드하면 ORT C++ 백그라운드 스레드가 abort() 타이머를 설정해
-~52초 후 컨테이너 전체를 종료한다. 이를 막기 위해 relink를 완전히 분리된
-subprocess에서 실행한다 — subprocess 종료 시 ORT 리소스가 완전히 정리됨.
+기존 vault 노트 재링크 worker. create-only 정책상 경고 후 0건 반환.
+기존 scheduler/subprocess 호출 계약을 유지하며 Qdrant/모델을 초기화하지 않는다.
 """
 import os
 import sys
@@ -14,19 +11,12 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
-from src.config import Config
-from src.db import Database
-from src.llm import LLMClient
-from src.linker import Linker
+import logging
 
 
 def main():
-    config = Config.load()
-    db = Database(config.postgres_url)
-    llm = LLMClient(config)
-    linker = Linker(config, llm)
-    updated = linker.relink_all_notes(db, qdrant_only=True)
-    print(updated, flush=True)
+    logging.getLogger(__name__).warning("기존 vault 노트 수정 금지: 재링크 worker 비활성화")
+    print(0, flush=True)
     return 0
 
 

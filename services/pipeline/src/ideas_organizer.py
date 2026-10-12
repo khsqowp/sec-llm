@@ -2,7 +2,7 @@
 02_Ideas 폴더 자율 재편성
 - Qdrant 임베딩 기반 유사 폴더 탐지
 - LLM 이중 검증 후 병합 (보수적: 의심스러우면 유지)
-- 파일 이동 + DB 경로 갱신
+- 기존 vault 파일 이동은 create-only 정책으로 실행 차단
 """
 import logging
 from pathlib import Path
@@ -24,7 +24,12 @@ class IdeasOrganizer:
         self.linker = linker
 
     def reorganize(self) -> None:
-        """유사 폴더 탐지 → LLM 검증 → 병합"""
+        """기존 노트의 이동은 create-only 정책으로 금지한다."""
+        logger.warning("기존 vault 노트 이동 금지: Ideas 재편성 비활성화")
+        return
+
+    def _find_merge_candidates(self) -> None:
+        """기존 후보 분석 로직 (자동 실행하지 않음)."""
         if not self.ideas_path.exists():
             return
 
@@ -127,23 +132,7 @@ class IdeasOrganizer:
     # ── 병합 실행 ─────────────────────────────────────────
 
     def _merge_folders(self, folder_a: Path, folder_b: Path, new_name: str) -> None:
-        target = self.ideas_path / new_name
-        target.mkdir(parents=True, exist_ok=True)
-
-        for src_folder in [folder_a, folder_b]:
-            for md_file in src_folder.glob("*.md"):
-                dest = _unique_dest(target, md_file.name)
-                self.db.update_note_path(str(md_file), str(dest))
-                if self.linker:
-                    self.linker.update_point_payload(str(md_file), str(dest))
-                md_file.rename(dest)
-
-            # 빈 폴더 제거
-            remaining = list(src_folder.iterdir())
-            if not remaining:
-                src_folder.rmdir()
-            else:
-                logger.warning(f"Ideas 폴더 비우기 실패 (비MD 파일 존재): {src_folder}")
+        raise PermissionError("기존 vault 노트 이동 금지: 폴더 병합은 사용자 검토가 필요합니다")
 
     def _sample_notes(self, folder: Path, max_chars: int = 1500) -> str:
         notes = sorted(folder.glob("*.md"))[:3]

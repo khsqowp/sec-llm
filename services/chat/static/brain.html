@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dolphin 2nd Brain</title>
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --sidebar-bg: #1e1e2e;
+    --bg: #b2c7da;
+    --panel-bg: #f0f4f8;
+    --border: #d0dce6;
+    --accent: #9b5fd4;
+    --accent2: #5b94d8;
+    --text: #1a1a2e;
+    --text-muted: #6b7280;
+    --sidebar-text: #cdd6f4;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'SFMono-Regular', Consolas, monospace;
+  }
+
+  body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── Top bar ── */
+  #topbar {
+    height: 50px;
+    background: #1e1e2e;
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 12px;
+    flex-shrink: 0;
+    color: var(--sidebar-text);
+  }
+
+  #topbar a {
+    color: rgba(205,214,244,0.6);
+    text-decoration: none;
+    font-size: 13px;
+  }
+  #topbar a:hover { color: var(--sidebar-text); }
+
+  #topbar h1 { font-size: 16px; font-weight: 700; flex: 1; }
+
+  .tab-bar {
+    display: flex;
+    gap: 4px;
+  }
+
+  .tab-btn {
+    padding: 5px 14px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    background: transparent;
+    color: rgba(205,214,244,0.5);
+    transition: all 0.15s;
+  }
+  .tab-btn.active { background: var(--accent); color: #fff; }
+  .tab-btn:hover:not(.active) { background: rgba(255,255,255,0.08); color: var(--sidebar-text); }
+
+  /* ── Layout ── */
+  #body {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+  }
+
+  /* ── Left sidebar (domain filter) ── */
+  #domain-panel {
+    width: 180px;
+    min-width: 180px;
+    background: #252535;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    padding: 8px 0;
+    border-right: 1px solid #333355;
+  }
+
+  .domain-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: rgba(205,214,244,0.4);
+    padding: 8px 12px 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .domain-item {
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    color: rgba(205,214,244,0.7);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: background 0.12s;
+  }
+  .domain-item:hover { background: rgba(255,255,255,0.06); color: var(--sidebar-text); }
+  .domain-item.active { background: rgba(155,95,212,0.2); color: #d0a0ff; }
+  .domain-item .cnt {
+    font-size: 11px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 9px;
+    padding: 1px 6px;
+  }
+
+  /* ── Main panels ── */
+  #panel-notes,
+  #panel-upload,
+  #panel-graph {
+    flex: 1;
+    display: none;
+    overflow: hidden;
+  }
+  #panel-notes.active,
+  #panel-upload.active,
+  #panel-graph.active { display: flex; }
+
+  /* ── Notes panel ── */
+  #panel-notes { gap: 0; }
+
+  #note-list-wrap {
+    width: 280px;
+    min-width: 280px;
+    background: var(--panel-bg);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  #note-search-wrap {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  #note-search {
+    width: 100%;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px;
+    background: #fff;
+    outline: none;
+  }
+  #note-search:focus { border-color: var(--accent); }
+
+  #note-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 6px 0;
+  }
+  #note-list::-webkit-scrollbar { width: 4px; }
+  #note-list::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 4px; }
+
+  .note-item {
+    padding: 8px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.12s;
+  }
+  .note-item:hover { background: #e8eef4; }
+  .note-item.active { background: rgba(155,95,212,0.1); border-left: 3px solid var(--accent); }
+  .note-item .note-title {
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .note-item .note-meta {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+    display: flex;
+    gap: 6px;
+  }
+  .note-tag {
+    display: inline-block;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    background: rgba(91,148,216,0.15);
+    color: var(--accent2);
+  }
+
+  #note-viewer {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px 28px;
+    background: #fff;
+  }
+  #note-viewer::-webkit-scrollbar { width: 5px; }
+  #note-viewer::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 4px; }
+
+  #note-content {
+    max-width: 800px;
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--text);
+  }
+
+  /* Markdown styles */
+  #note-content h1 { font-size: 22px; margin: 0 0 12px; }
+  #note-content h2 { font-size: 18px; margin: 20px 0 8px; }
+  #note-content h3 { font-size: 15px; margin: 16px 0 6px; }
+  #note-content p  { margin-bottom: 10px; }
+  #note-content ul, #note-content ol { margin: 8px 0 8px 20px; }
+  #note-content li { margin-bottom: 4px; }
+  #note-content code {
+    background: #f0f4f8;
+    border: 1px solid #d0dce6;
+    border-radius: 3px;
+    padding: 1px 4px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  #note-content pre {
+    background: #1e1e2e;
+    color: #cdd6f4;
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    margin: 10px 0;
+  }
+  #note-content pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    font-size: 13px;
+  }
+  #note-content blockquote {
+    border-left: 3px solid var(--accent);
+    padding-left: 12px;
+    color: var(--text-muted);
+    margin: 10px 0;
+  }
+  #note-content table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13px; }
+  #note-content th, #note-content td {
+    border: 1px solid var(--border);
+    padding: 6px 10px;
+    text-align: left;
+  }
+  #note-content th { background: #f0f4f8; font-weight: 600; }
+  #note-content a { color: var(--accent2); }
+
+  .note-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-muted);
+    font-size: 14px;
+    gap: 8px;
+  }
+  .note-empty .icon { font-size: 40px; }
+
+  /* ── Upload panel ── */
+  #panel-upload {
+    flex-direction: column;
+    align-items: center;
+    padding: 32px;
+    gap: 20px;
+    overflow-y: auto;
+  }
+
+  .upload-section {
+    width: 100%;
+    max-width: 700px;
+  }
+
+  .upload-section h2 {
+    font-size: 16px;
+    font-weight: 700;
+    margin-bottom: 12px;
+    color: var(--text);
+  }
+
+  #dropzone {
+    border: 2px dashed var(--accent);
+    border-radius: 12px;
+    padding: 40px 20px;
+    text-align: center;
+    cursor: pointer;
+    background: rgba(155,95,212,0.04);
+    transition: background 0.15s, border-color 0.15s;
+    position: relative;
+  }
+  #dropzone.drag-over { background: rgba(155,95,212,0.12); border-color: #7b3faa; }
+
+  #dropzone input[type=file] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+
+  #dropzone .drop-icon { font-size: 36px; margin-bottom: 10px; }
+  #dropzone .drop-text { font-size: 14px; color: var(--text-muted); }
+  #dropzone .drop-hint { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
+
+  #upload-status {
+    margin-top: 12px;
+    font-size: 13px;
+    min-height: 20px;
+    color: var(--accent);
+  }
+
+  /* Jobs table */
+  #jobs-table-wrap {
+    width: 100%;
+    max-width: 700px;
+    background: var(--panel-bg);
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    overflow: hidden;
+  }
+
+  #jobs-table-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    font-size: 14px;
+  }
+
+  #jobs-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  #jobs-table th {
+    background: #e8eef4;
+    padding: 7px 10px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  #jobs-table td {
+    padding: 7px 10px;
+    border-top: 1px solid var(--border);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+  }
+
+  .status-badge {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 9px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .status-badge.completed  { background: rgba(58,170,118,0.15); color: #2d8a5f; }
+  .status-badge.processing { background: rgba(91,148,216,0.15); color: #3a70b0; }
+  .status-badge.pending    { background: rgba(220,180,50,0.15);  color: #a07820; }
+  .status-badge.failed     { background: rgba(192,80,80,0.15);   color: #a03030; }
+  .status-badge.queued     { background: rgba(155,95,212,0.15);  color: var(--accent); }
+
+  .refresh-btn {
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: #fff;
+    font-size: 12px;
+    cursor: pointer;
+    color: var(--text-muted);
+  }
+  .refresh-btn:hover { background: #e8eef4; }
+
+  /* ── Graph panel ── */
+  #panel-graph {
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+  }
+
+  #graph-controls {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    z-index: 10;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    background: rgba(255,255,255,0.9);
+    padding: 6px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+    font-size: 12px;
+  }
+
+  #graph-controls button {
+    padding: 3px 8px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    background: #fff;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text);
+  }
+  #graph-controls button:hover { background: #e8eef4; }
+
+  #graph-tooltip {
+    position: absolute;
+    display: none;
+    background: rgba(30,30,46,0.92);
+    color: #cdd6f4;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    pointer-events: none;
+    z-index: 20;
+    max-width: 220px;
+  }
+
+  #graph-svg { width: 100%; height: 100%; }
+
+  #graph-legend {
+    position: absolute;
+    bottom: 12px;
+    right: 12px;
+    background: rgba(255,255,255,0.9);
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    font-size: 11px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+
+  /* Toast */
+  #toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%) translateY(60px);
+    background: #333;
+    color: #fff;
+    padding: 8px 18px;
+    border-radius: 20px;
+    font-size: 13px;
+    opacity: 0;
+    transition: all 0.25s;
+    z-index: 9999;
+    pointer-events: none;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.18); border-radius: 4px; }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <a href="/">← 채팅</a>
+  <h1>🧠 2nd Brain</h1>
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="notes" onclick="switchTab('notes')">노트</button>
+    <button class="tab-btn" data-tab="upload" onclick="switchTab('upload')">업로드</button>
+    <button class="tab-btn" data-tab="graph" onclick="switchTab('graph')">연결도</button>
+  </div>
+</div>
+
+<div id="body">
+  <!-- Domain sidebar -->
+  <div id="domain-panel">
+    <div class="domain-label">도메인</div>
+    <div class="domain-item active" data-domain="" onclick="selectDomain(this, '')">
+      전체 <span class="cnt" id="domain-total">0</span>
+    </div>
+    <div id="domain-list"></div>
+  </div>
+
+  <!-- Notes -->
+  <div id="panel-notes" class="active">
+    <div id="note-list-wrap">
+      <div id="note-search-wrap">
+        <input type="text" id="note-search" placeholder="제목 검색..." oninput="filterNotes()">
+      </div>
+      <div id="note-list"></div>
+    </div>
+    <div id="note-viewer">
+      <div class="note-empty">
+        <div class="icon">📄</div>
+        <span>노트를 선택하세요</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Upload -->
+  <div id="panel-upload">
+    <div class="upload-section">
+      <h2>파일 업로드</h2>
+      <div id="dropzone">
+        <input type="file" id="file-input" multiple accept="*/*" onchange="handleFiles(this.files)">
+        <div class="drop-icon">📁</div>
+        <div class="drop-text">파일을 드래그하거나 클릭해서 선택</div>
+        <div class="drop-hint">PDF, DOCX, XLSX, PPTX, HWP, TXT, MD, 이미지 등 지원</div>
+      </div>
+      <div id="upload-status"></div>
+    </div>
+
+    <div class="upload-section">
+      <div id="jobs-table-wrap">
+        <div id="jobs-table-header">
+          처리 현황
+          <button class="refresh-btn" onclick="loadJobs()">새로고침</button>
+        </div>
+        <table id="jobs-table">
+          <thead>
+            <tr>
+              <th>파일명</th>
+              <th>도메인</th>
+              <th>상태</th>
+              <th>생성 노트</th>
+              <th>시간</th>
+            </tr>
+          </thead>
+          <tbody id="jobs-tbody">
+            <tr><td colspan="5" style="text-align:center;color:#aaa;padding:16px">로딩 중...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Graph -->
+  <div id="panel-graph">
+    <div id="graph-controls">
+      <span>노드 <span id="graph-node-count">0</span></span>
+      <span>엣지 <span id="graph-edge-count">0</span></span>
+      <button onclick="resetZoom()">리셋</button>
+      <button onclick="loadGraph()">새로고침</button>
+    </div>
+    <div id="graph-tooltip"></div>
+    <svg id="graph-svg"></svg>
+    <div id="graph-legend"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────
+const state = {
+  notes: [],
+  filteredNotes: [],
+  currentDomain: '',
+  currentNoteId: null,
+  jobPollTimer: null,
+};
+
+const DOMAIN_COLORS = {
+  vulnerability: '#c05050',
+  owasp:         '#e07c3a',
+  pentest:       '#d4a030',
+  advisory:      '#3aaa76',
+  compliance:    '#5b94d8',
+  threat_intel:  '#9b5fd4',
+  vuln_env:      '#46b0b0',
+  general:       '#888',
+};
+
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
+}
+
+function domainColor(d) { return DOMAIN_COLORS[d] || '#888'; }
+
+// ── Tab ───────────────────────────────────────────────────────
+function switchTab(tab) {
+  clearTimeout(state.jobPollTimer);
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('#panel-notes, #panel-upload, #panel-graph').forEach(p => p.classList.remove('active'));
+  document.getElementById(`panel-${tab}`).classList.add('active');
+  if (tab === 'notes') loadNotes();
+  if (tab === 'upload') loadJobs();
+  if (tab === 'graph') loadGraph();
+}
+
+// ── Domains & Notes ───────────────────────────────────────────
+async function loadNotes() {
+  try {
+    const url = state.currentDomain
+      ? `/api/brain/notes?domain=${encodeURIComponent(state.currentDomain)}&limit=300`
+      : '/api/brain/notes?limit=300';
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('API error');
+    const data = await r.json();
+    state.notes = data.notes || [];
+    document.getElementById('domain-total').textContent = data.total ?? state.notes.length;
+    renderDomains(data.domains || []);
+    filterNotes();
+  } catch (e) {
+    toast('노트 로드 실패: ' + e.message);
+  }
+}
+
+function renderDomains(domains) {
+  const list = document.getElementById('domain-list');
+  list.innerHTML = '';
+  domains.forEach(d => {
+    const el = document.createElement('div');
+    el.className = 'domain-item' + (state.currentDomain === d.domain ? ' active' : '');
+    el.dataset.domain = d.domain;
+    el.innerHTML = `<span>${esc(d.domain || '기타')}</span><span class="cnt">${d.count}</span>`;
+    el.onclick = () => selectDomain(el, d.domain);
+    list.appendChild(el);
+  });
+}
+
+function selectDomain(el, domain) {
+  document.querySelectorAll('.domain-item').forEach(d => d.classList.remove('active'));
+  el.classList.add('active');
+  state.currentDomain = domain;
+  loadNotes();
+}
+
+function filterNotes() {
+  const q = document.getElementById('note-search').value.trim().toLowerCase();
+  state.filteredNotes = q
+    ? state.notes.filter(n => (n.title || '').toLowerCase().includes(q))
+    : [...state.notes];
+  renderNoteList();
+}
+
+function renderNoteList() {
+  const list = document.getElementById('note-list');
+  list.innerHTML = '';
+  if (!state.filteredNotes.length) {
+    list.innerHTML = '<div style="padding:16px;text-align:center;color:#aaa;font-size:13px">노트 없음</div>';
+    return;
+  }
+  state.filteredNotes.forEach(n => {
+    const el = document.createElement('div');
+    el.className = 'note-item' + (state.currentNoteId === n.id ? ' active' : '');
+    const tags = (n.tags || []).slice(0, 3).map(t => `<span class="note-tag">${esc(t)}</span>`).join('');
+    el.innerHTML = `
+      <div class="note-title">${esc(n.title || '(제목 없음)')}</div>
+      <div class="note-meta">
+        <span style="color:${domainColor(n.domain)}">${esc(n.domain || '')}</span>
+        ${tags}
+      </div>`;
+    el.onclick = () => openNote(n.id, el);
+    list.appendChild(el);
+  });
+}
+
+async function openNote(id, el) {
+  document.querySelectorAll('.note-item').forEach(n => n.classList.remove('active'));
+  if (el) el.classList.add('active');
+  state.currentNoteId = id;
+
+  const viewer = document.getElementById('note-viewer');
+  viewer.innerHTML = '<div class="note-empty"><div class="icon">⏳</div><span>로딩 중...</span></div>';
+
+  try {
+    const r = await fetch(`/api/brain/notes/${id}`);
+    if (!r.ok) throw new Error('API error');
+    const note = await r.json();
+    const html = DOMPurify.sanitize(marked.parse(note.content || '*(내용 없음)*'));
+    const tags = (note.tags || []).map(t => `<span class="note-tag">${esc(t)}</span>`).join(' ');
+    viewer.innerHTML = `
+      <div id="note-content">
+        <div style="margin-bottom:16px">
+          <h1 style="margin:0 0 6px">${esc(note.title || '(제목 없음)')}</h1>
+          <div style="font-size:12px;color:#888;display:flex;gap:10px;flex-wrap:wrap">
+            <span style="color:${domainColor(note.domain)}">${esc(note.domain || '')}</span>
+            ${tags}
+            <span>${note.created_at ? note.created_at.slice(0,10) : ''}</span>
+            ${note.source_file ? `<span>원본: ${esc(note.source_file)}</span>` : ''}
+          </div>
+        </div>
+        ${html}
+      </div>`;
+  } catch (e) {
+    viewer.innerHTML = `<div class="note-empty"><div class="icon">⚠️</div><span>로드 실패: ${esc(e.message)}</span></div>`;
+  }
+}
+
+// ── Upload ────────────────────────────────────────────────────
+const dropzone = document.getElementById('dropzone');
+dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag-over'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
+dropzone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropzone.classList.remove('drag-over');
+  handleFiles(e.dataTransfer.files);
+});
+
+async function handleFiles(files) {
+  if (!files || !files.length) return;
+  const statusEl = document.getElementById('upload-status');
+  statusEl.textContent = `업로드 중... (${files.length}개)`;
+  let success = 0, fail = 0;
+  for (const file of files) {
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const r = await fetch('/api/brain/upload', { method: 'POST', body: fd });
+      if (!r.ok) { fail++; continue; }
+      success++;
+    } catch { fail++; }
+  }
+  statusEl.textContent = `완료: ${success}개 성공${fail ? `, ${fail}개 실패` : ''}. 파이프라인에서 처리됩니다.`;
+  document.getElementById('file-input').value = '';
+  setTimeout(loadJobs, 1000);
+}
+
+async function loadJobs() {
+  try {
+    const r = await fetch('/api/brain/jobs?limit=50');
+    if (!r.ok) return;
+    const data = await r.json();
+    renderJobs(data.jobs || []);
+  } catch { /* retry on the next poll */ }
+  finally {
+    clearTimeout(state.jobPollTimer);
+    if (document.getElementById('panel-upload').classList.contains('active')) {
+      state.jobPollTimer = setTimeout(loadJobs, 3000);
+    }
+  }
+}
+
+function renderJobs(jobs) {
+  const tbody = document.getElementById('jobs-tbody');
+  if (!jobs.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#aaa;padding:16px">처리 작업 없음</td></tr>';
+    return;
+  }
+  tbody.innerHTML = jobs.map(j => {
+    const fn = j.filename || j.source_path || '';
+    const notes = Array.isArray(j.created_notes) ? j.created_notes.length : 0;
+    const ts = j.created_at ? j.created_at.slice(0,16).replace('T',' ') : '';
+    return `<tr>
+      <td title="${esc(fn)}">${esc(fn)}</td>
+      <td>${esc(j.domain || '')}</td>
+      <td><span class="status-badge ${esc(j.status)}">${esc(j.status)}</span></td>
+      <td>${notes}</td>
+      <td style="color:#888;font-size:12px">${ts}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Graph ─────────────────────────────────────────────────────
+let simulation = null;
+let zoomBehavior = null;
+
+async function loadGraph() {
+  try {
+    const url = state.currentDomain
+      ? `/api/brain/graph?domain=${encodeURIComponent(state.currentDomain)}`
+      : '/api/brain/graph';
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('API error');
+    const data = await r.json();
+    document.getElementById('graph-node-count').textContent = data.nodes.length;
+    document.getElementById('graph-edge-count').textContent = data.edges.length;
+    renderGraph(data.nodes, data.edges);
+    renderLegend(data.nodes);
+  } catch (e) {
+    toast('그래프 로드 실패: ' + e.message);
+  }
+}
+
+function renderGraph(nodes, edges) {
+  if (simulation) simulation.stop();
+  const svg = d3.select('#graph-svg');
+  svg.selectAll('*').remove();
+
+  if (!nodes.length) {
+    svg.append('text').attr('x', '50%').attr('y', '50%')
+      .attr('text-anchor', 'middle').attr('fill', '#aaa').attr('font-size', 14)
+      .text('노트가 없습니다');
+    return;
+  }
+
+  const svgEl = document.getElementById('graph-svg');
+  const W = svgEl.clientWidth || 800;
+  const H = svgEl.clientHeight || 600;
+
+  const g = svg.append('g');
+
+  zoomBehavior = d3.zoom()
+    .scaleExtent([0.1, 5])
+    .on('zoom', e => g.attr('transform', e.transform));
+  svg.call(zoomBehavior);
+
+  // Index lookup
+  const idMap = new Map(nodes.map((n, i) => [n.id, i]));
+
+  // Links
+  const validEdges = edges.filter(e => idMap.has(e.source) && idMap.has(e.target));
+
+  const link = g.append('g')
+    .selectAll('line')
+    .data(validEdges)
+    .join('line')
+    .attr('stroke', '#aaa')
+    .attr('stroke-width', 1)
+    .attr('stroke-opacity', 0.5);
+
+  // Nodes
+  const nodeGroup = g.append('g')
+    .selectAll('g')
+    .data(nodes)
+    .join('g')
+    .style('cursor', 'pointer')
+    .call(d3.drag()
+      .on('start', (e, d) => { if (!e.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on('end', (e, d) => { if (!e.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; }));
+
+  nodeGroup.append('circle')
+    .attr('r', 6)
+    .attr('fill', d => domainColor(d.domain))
+    .attr('stroke', '#fff')
+    .attr('stroke-width', 1.5);
+
+  nodeGroup.append('text')
+    .attr('dy', -10)
+    .attr('text-anchor', 'middle')
+    .attr('font-size', 10)
+    .attr('fill', '#333')
+    .text(d => (d.title || '').slice(0, 20));
+
+  // Tooltip
+  const tooltip = document.getElementById('graph-tooltip');
+  nodeGroup.on('mouseover', (e, d) => {
+    tooltip.style.display = 'block';
+    tooltip.style.left = (e.pageX + 10) + 'px';
+    tooltip.style.top  = (e.pageY + 10) + 'px';
+    tooltip.textContent = `${d.title || ''}  (${d.domain || ''})`;
+  }).on('mousemove', e => {
+    tooltip.style.left = (e.pageX + 10) + 'px';
+    tooltip.style.top  = (e.pageY + 10) + 'px';
+  }).on('mouseout', () => { tooltip.style.display = 'none'; })
+    .on('click', (e, d) => {
+      switchTab('notes');
+      const noteEl = [...document.querySelectorAll('.note-item')].find(el =>
+        el.querySelector('.note-title')?.textContent.trim() === d.title);
+      openNote(d.id, noteEl);
+      if (noteEl) noteEl.scrollIntoView({behavior:'smooth', block:'nearest'});
+    });
+
+  simulation = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(validEdges)
+      .id(d => d.id)
+      .distance(80))
+    .force('charge', d3.forceManyBody().strength(-120))
+    .force('center', d3.forceCenter(W / 2, H / 2))
+    .force('collision', d3.forceCollide(14))
+    .on('tick', () => {
+      link
+        .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+      nodeGroup.attr('transform', d => `translate(${d.x},${d.y})`);
+    });
+}
+
+function renderLegend(nodes) {
+  const domains = [...new Set(nodes.map(n => n.domain).filter(Boolean))];
+  const legend = document.getElementById('graph-legend');
+  legend.innerHTML = domains.map(d => `
+    <div class="legend-item">
+      <div class="legend-dot" style="background:${domainColor(d)}"></div>
+      <span style="font-size:11px;color:#555">${esc(d)}</span>
+    </div>`).join('');
+}
+
+function resetZoom() {
+  if (zoomBehavior) {
+    d3.select('#graph-svg').transition().duration(400).call(zoomBehavior.transform, d3.zoomIdentity);
+  }
+}
+
+// ── Toast ─────────────────────────────────────────────────────
+function toast(msg, ms = 2500) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), ms);
+}
+
+// ── Init ──────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  loadNotes();
+  loadJobs();
+});
+</script>
+</body>
+</html>

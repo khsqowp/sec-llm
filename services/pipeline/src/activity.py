@@ -1,5 +1,5 @@
 """
-00_activity_log.md 에 작업 내역을 추가 기록
+작업 내역을 새 활동 이벤트 파일로 기록 (기존 로그 append 금지)
 """
 import logging
 import time
@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import List
 
 from .config import Config
+from .new_files import write_new_file
 
 logger = logging.getLogger(__name__)
 
@@ -18,12 +19,7 @@ class ActivityLogger:
         self._ensure_file()
 
     def _ensure_file(self):
-        if not self.log_path.exists():
-            self.log_path.parent.mkdir(parents=True, exist_ok=True)
-            self.log_path.write_text(
-                "# 활동 로그\n\n자동 생성된 처리 내역 로그입니다.\n\n",
-                encoding="utf-8",
-            )
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def log(
         self,
@@ -69,15 +65,10 @@ class ActivityLogger:
     def _write_entry(self, entry: str, retries: int = 5, delay: float = 0.3):
         for attempt in range(retries):
             try:
-                with open(self.log_path, "a", encoding="utf-8") as f:
-                    f.write(entry)
+                write_new_file(self.log_path, "# 활동 로그\n\n" + entry)
                 return
             except OSError as e:
-                if e.errno == 35 and attempt < retries - 1:  # EDEADLK — iCloud lock race
+                if e.errno == 35 and attempt < retries - 1:
                     time.sleep(delay * (attempt + 1))
                     continue
-                logger.error(f"활동 로그 기록 실패: {e}")
-                return
-            except Exception as e:
-                logger.error(f"활동 로그 기록 실패: {e}")
-                return
+                raise

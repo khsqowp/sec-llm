@@ -118,7 +118,10 @@ class LLMClient:
                 if resp.status_code != 200:
                     logger.warning(f"Ollama 오류 바디 [{resp.status_code}]: {resp.text[:400]}")
                 resp.raise_for_status()
-                return resp.json()["message"]["content"].strip()
+                content = resp.json()["message"]["content"].strip()
+                if not content:
+                    raise ValueError("LLM 응답 내용이 비어 있습니다")
+                return content
             except requests.HTTPError as e:
                 wait = 30 * attempt  # HTTP 500: Ollama 내부 회복에 20-30초 필요
                 logger.warning(f"LLM HTTP 오류 (시도 {attempt}/{self.max_retries}), {wait}초 후 재시도: {e}")
@@ -130,7 +133,7 @@ class LLMClient:
                 if attempt < self.max_retries:
                     time.sleep(wait)
 
-        return "[LLM 응답 실패]"
+        raise RuntimeError(f"LLM 호출 실패: {self.max_retries}회 재시도 소진")
 
     def unload_fastembed(self) -> None:
         """ONNX 세션 완전 해제 (재로드 없음) — relink 완료 후 abort() 타이머 제거.
@@ -688,8 +691,10 @@ Rules:
         )
         raw = self._chat(system, prompt, temperature=0.1, num_ctx=self.config.num_ctx_for("classify"))
         result = self._extract_json(raw)
-        if "verdict" not in result:
-            result = {"verdict": "good", "reason": "파싱 실패 — 기본값 good", "missing_topics": []}
+        if not isinstance(result, dict) or result.get("verdict") not in {"good", "insufficient_topics", "critical_error"}:
+            raise ValueError("노트 평가 응답에 유효한 verdict가 없습니다")
+        if not isinstance(result.get("missing_topics", []), list):
+            raise ValueError("missing_topics는 배열이어야 합니다")
         return result
 
     def attempt_correction(self, title: str, domain: str, content: str, reason: str) -> str:
@@ -746,8 +751,8 @@ Return JSON: {{"still_critical": true|false, "reason": "Korean explanation"}}"""
         )
         raw = self._chat(system, prompt, temperature=0.1, num_ctx=self.config.num_ctx_for("classify"))
         result = self._extract_json(raw)
-        if "still_critical" not in result:
-            result = {"still_critical": False, "reason": "파싱 실패 — 수정 완료로 간주"}
+        if not isinstance(result, dict) or not isinstance(result.get("still_critical"), bool):
+            raise ValueError("자기 검증 응답에 boolean still_critical이 없습니다")
         return result
 
     def generate_perplexity_queries(self, title: str, missing_topics: list) -> list:

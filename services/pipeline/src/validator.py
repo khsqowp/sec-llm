@@ -10,6 +10,7 @@ from typing import Optional
 
 from .claude_client import ClaudeAPIClient
 from .config import Config
+from .new_files import write_new_file
 from .db import Database
 from .llm import LLMClient
 from .perplexity import PerplexityClient
@@ -104,6 +105,8 @@ class NoteValidator:
 
         if verdict == "insufficient_topics":
             output_path = self._handle_insufficient(content, title, domain, missing_topics)
+            if output_path is None:
+                raise RuntimeError("보충 노트 생성/저장 실패")
             final_verdict = "insufficient_fixed"
             self.db.mark_note_validated(str(note_path), final_verdict)
             self.db.log_validation(
@@ -118,9 +121,7 @@ class NoteValidator:
                 note_path, content, title, domain, reason, reprocess_count
             )
 
-        # 알 수 없는 verdict는 good으로 처리
-        self.db.mark_note_validated(str(note_path), "good")
-        return "good"
+        raise ValueError(f"알 수 없는 검증 verdict: {verdict}")
 
     def _handle_insufficient(
         self,
@@ -162,6 +163,8 @@ class NoteValidator:
             if not still_critical:
                 # 수정 성공
                 output_path = self._write_to_inbox(title, "correction", corrected)
+                if output_path is None:
+                    raise RuntimeError("수정 노트 저장 실패")
                 self.db.mark_note_validated(str(note_path), "corrected")
                 self.db.log_validation(
                     str(note_path), title, "corrected", new_reason,
@@ -188,6 +191,8 @@ class NoteValidator:
         if claude_result:
             final_note = self.llm.create_correction_note(title, domain, claude_result, reason)
             output_path = self._write_to_inbox(title, "correction_claude", final_note)
+            if output_path is None:
+                raise RuntimeError("Claude 수정 노트 저장 실패")
             self.db.mark_note_validated(str(note_path), "accepted_limit")
             self.db.log_validation(
                 str(note_path), title, "accepted_limit", reason,
@@ -239,12 +244,14 @@ class NoteValidator:
 
     def _write_to_inbox(self, title: str, suffix: str, content: str) -> Optional[Path]:
         """00_inbox에 새 .md 파일 작성. 기존 파일 절대 수정하지 않음."""
+        if not content.strip():
+            return None
         try:
             safe_title = re.sub(r'[^\w\s가-힣-]', '', title).strip()[:60]
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"{safe_title}_{suffix}_{timestamp}.md"
             output_path = self.inbox / filename
-            output_path.write_text(content, encoding="utf-8")
+            output_path = write_new_file(output_path, content)
             logger.info(f"inbox 저장: {filename}")
             return output_path
         except Exception as e:

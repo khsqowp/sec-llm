@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from .config import Config
+from .new_files import write_new_files
 
 logger = logging.getLogger(__name__)
 
@@ -43,43 +44,7 @@ class VaultWriter:
         content가 max_words_per_note 초과하면 Part1/Part2로 분할.
         생성된 파일 경로 목록 반환.
         """
-        parts = self._split_into_parts(content)
-        created = []
-
-        if len(parts) == 1:
-            path = self.note_path_for(domain, title)
-            body = self._build_note(
-                title=title,
-                domain=domain,
-                content=parts[0],
-                source_file=source_file,
-                tags=tags or [],
-                links=links or [],
-                part=None,
-                metadata=metadata,
-            )
-            path.write_text(body, encoding="utf-8")
-            created.append(path)
-        else:
-            for i, part_content in enumerate(parts, 1):
-                part_title = f"{title} Part{i}"
-                path = self.note_path_for(domain, part_title)
-                nav_links = self._part_nav(title, i, len(parts))
-                body = self._build_note(
-                    title=part_title,
-                    domain=domain,
-                    content=part_content,
-                    source_file=source_file,
-                    tags=tags or [],
-                    links=links or [],
-                    part=(i, len(parts)),
-                    nav_links=nav_links,
-                    metadata=metadata,
-                )
-                path.write_text(body, encoding="utf-8")
-                created.append(path)
-
-        return created
+        return self._write_parts(title, domain, content, source_file, tags or [], links or [], metadata)
 
     # ── 합본 노트 저장 ────────────────────────────────────
 
@@ -101,43 +66,31 @@ class VaultWriter:
         source_section = "\n## 원본 노트\n" + "\n".join(f"- {l}" for l in source_links)
 
         full_content = content + "\n\n" + source_section
-        parts = self._split_into_parts(full_content)
-        created = []
+        return self._write_parts(title, domain, full_content, "합본", tags_combined,
+                                 (links or []) + source_titles, metadata)
 
-        if len(parts) == 1:
-            path = self.note_path_for(domain, title)
-            body = self._build_note(
-                title=title,
-                domain=domain,
-                content=parts[0],
-                source_file="합본",
-                tags=tags_combined,
-                links=(links or []) + source_titles,
-                part=None,
-                metadata=metadata,
-            )
-            path.write_text(body, encoding="utf-8")
-            created.append(path)
-        else:
-            for i, part_content in enumerate(parts, 1):
-                part_title = f"{title} Part{i}"
-                path = self.note_path_for(domain, part_title)
-                nav_links = self._part_nav(title, i, len(parts))
-                body = self._build_note(
-                    title=part_title,
-                    domain=domain,
-                    content=part_content,
-                    source_file="합본",
-                    tags=tags_combined,
-                    links=(links or []) + source_titles,
-                    part=(i, len(parts)),
-                    nav_links=nav_links,
-                    metadata=metadata,
-                )
-                path.write_text(body, encoding="utf-8")
-                created.append(path)
+    def _write_parts(self, title, domain, content, source_file, tags, links, metadata):
+        parts = self._split_into_parts(content)
+        titles = [title] if len(parts) == 1 else [f"{title} Part{i}" for i in range(1, len(parts) + 1)]
+        paths = [self.note_path_for(domain, t) for t in titles]
 
-        return created
+        def render(actual_paths):
+            bodies = []
+            for i, part_content in enumerate(parts):
+                nav = []
+                if i > 0:
+                    nav.append(f"[[{actual_paths[i - 1].stem}|← Part{i}]]")
+                if i + 1 < len(parts):
+                    nav.append(f"[[{actual_paths[i + 1].stem}|Part{i + 2} →]]")
+                bodies.append(self._build_note(
+                    title=titles[i], domain=domain, content=part_content,
+                    source_file=source_file, tags=tags, links=links,
+                    part=(i + 1, len(parts)) if len(parts) > 1 else None,
+                    nav_links="> " + " | ".join(nav) if nav else "", metadata=metadata,
+                ))
+            return bodies
+
+        return write_new_files(paths, render)
 
     # ── 내부 헬퍼 ────────────────────────────────────────
 
@@ -268,4 +221,4 @@ tags:
 def _safe_filename(title: str) -> str:
     safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", title)
     safe = safe.strip(". ")
-    return safe[:200] if len(safe) > 200 else safe
+    return (safe[:200] if len(safe) > 200 else safe) or "untitled"

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from .config import Config
+from .new_files import write_new_file
 from .db import Database
 from .llm import LLMClient
 from .perplexity import PerplexityClient
@@ -163,7 +164,7 @@ class GapAnalyzer:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"{safe_title}_concept_{timestamp}.md"
             output_path = self.inbox / filename
-            output_path.write_text(content, encoding="utf-8")
+            output_path = write_new_file(output_path, content)
             logger.info(f"개념서 inbox 저장: {filename}")
             return output_path
         except Exception as e:

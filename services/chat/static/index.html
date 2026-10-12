@@ -204,12 +204,31 @@
     transition: all 0.15s;
   }
 
-  .chip.general { border-color: #5b94d8; color: #5b94d8; }
-  .chip.rag     { border-color: #3aaa76; color: #3aaa76; }
-  .chip.ctf     { border-color: #c05050; color: #c05050; }
-  .chip.active.general { background: #5b94d8; color: #fff; }
-  .chip.active.rag     { background: #3aaa76; color: #fff; }
-  .chip.active.ctf     { background: #c05050; color: #fff; }
+  .chip.general     { border-color: #5b94d8; color: #5b94d8; }
+  .chip.rag         { border-color: #3aaa76; color: #3aaa76; }
+  .chip.ctf         { border-color: #c05050; color: #c05050; }
+  .chip.remediator  { border-color: #e07c3a; color: #e07c3a; }
+  .chip.diagnostics { border-color: #9b5fd4; color: #9b5fd4; }
+  .chip.active.general     { background: #5b94d8; color: #fff; }
+  .chip.active.rag         { background: #3aaa76; color: #fff; }
+  .chip.active.ctf         { background: #c05050; color: #fff; }
+  .chip.active.remediator  { background: #e07c3a; color: #fff; }
+  .chip.active.diagnostics { background: #9b5fd4; color: #fff; }
+
+  .header-nav { display: flex; align-items: center; }
+  .brain-link {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 6px;
+    background: rgba(155,95,212,0.15);
+    color: #9b5fd4;
+    text-decoration: none;
+    border: 1px solid rgba(155,95,212,0.4);
+    white-space: nowrap;
+    transition: background 0.15s;
+  }
+  .brain-link:hover { background: rgba(155,95,212,0.3); }
 
   .header-actions { display: flex; gap: 6px; }
 
@@ -782,9 +801,14 @@
     <button id="btn-hamburger" onclick="toggleSidebar()">☰</button>
     <span id="session-title">Dolphin AI</span>
     <div class="mode-chips">
-      <button class="chip general active" onclick="switchMode('general')">일반</button>
-      <button class="chip rag"            onclick="switchMode('rag')">RAG</button>
-      <button class="chip ctf"            onclick="switchMode('ctf')">CTF</button>
+      <button class="chip general active"  onclick="switchMode('general')">일반</button>
+      <button class="chip rag"             onclick="switchMode('rag')">RAG</button>
+      <button class="chip ctf"             onclick="switchMode('ctf')">CTF</button>
+      <button class="chip remediator"      onclick="switchMode('remediator')">조치방안</button>
+      <button class="chip diagnostics"     onclick="switchMode('diagnostics')">진단</button>
+    </div>
+    <div class="header-nav">
+      <a href="/brain" class="brain-link">🧠 2nd Brain</a>
     </div>
     <div class="header-actions">
       <button class="icon-btn" title="대화 검색" onclick="openSearch()">🔍</button>
@@ -895,7 +919,8 @@ function renderSessionList() {
 }
 
 function modeLabel(m) {
-  return m === 'rag' ? 'RAG' : m === 'ctf' ? 'CTF' : '일반';
+  const labels = { rag: 'RAG', ctf: 'CTF', remediator: '조치방안', diagnostics: '진단' };
+  return labels[m] || '일반';
 }
 
 async function newChat() {
