@@ -1,6 +1,7 @@
 llm:
-  model: "hf.co/mradermacher/Qwen2.5-Coder-14B-Instruct-Uncensored-GGUF:Q4_K_M"
+  model: "hermes3:8b-8k"
   embedding_model: "nomic-embed-cpu"
+  vision_model: "llava:7b"
   timeout: 600
   max_retries: 3
 

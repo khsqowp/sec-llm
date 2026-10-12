@@ -13,7 +13,7 @@ class Config:
     postgres_url: str = ""
     vault_path: Path = Path("/vault")
     storage_path: Path = Path("/storage")
-    inbox_path: Path = Path("/vault/00_inbox")
+    inbox_path: Path = Path("/storage/inbox")
     config_path: Path = Path("/config")
     perplexity_api_key: str = ""
     anthropic_api_key: str = ""
@@ -30,7 +30,7 @@ class Config:
             postgres_url=os.environ.get("POSTGRES_URL", ""),
             vault_path=Path(os.environ.get("VAULT_PATH", "/vault")),
             storage_path=Path(os.environ.get("STORAGE_PATH", "/storage")),
-            inbox_path=Path(os.environ.get("INBOX_PATH", "/vault/00_inbox")),
+            inbox_path=Path(os.environ.get("INBOX_PATH", "/storage/inbox")),
             config_path=Path(os.environ.get("CONFIG_PATH", "/config")),
             perplexity_api_key=os.environ.get("PERPLEXITY_API_KEY", ""),
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
@@ -52,11 +52,12 @@ class Config:
     # ── 편의 프로퍼티 ──────────────────────────────────────
 
     @property
+    def vision_model(self) -> str:
+        return self.settings.get("llm", {}).get("vision_model", "llava:7b")
+
+    @property
     def llm_model(self) -> str:
-        return self.settings.get("llm", {}).get(
-            "model",
-            "hf.co/mradermacher/Qwen2.5-Coder-14B-Instruct-Uncensored-GGUF:Q4_K_M",
-        )
+        return self.settings.get("llm", {}).get("model", "hermes3:8b-8k")
 
     @property
     def embedding_model(self) -> str:
@@ -137,7 +138,7 @@ class Config:
     @property
     def activity_log_path(self) -> Path:
         log_name = self.settings.get("vault", {}).get("activity_log", "00_activity_log.md")
-        return self.vault_path / log_name
+        return self._contained_folder(self.vault_path, log_name)
 
     @property
     def num_ctx_default(self) -> int:
@@ -154,16 +155,23 @@ class Config:
     def vault_folder_for_domain(self, domain: str) -> Path:
         relative = self.domain_folders.get(domain)
         if relative:
-            return self.vault_path / relative
+            return self._contained_folder(self.vault_path, relative)
         # 미등록 도메인 = 아이디어 토픽 → 02_Ideas/{topic}/
-        return self.vault_path / "02_Ideas" / domain
+        return self._contained_folder(self.vault_path, str(Path("02_Ideas") / domain))
 
     def storage_folder_for_domain(self, domain: str) -> Path:
         relative = self.storage_domain_folders.get(domain)
         if relative:
-            return self.storage_path / relative
+            return self._contained_folder(self.storage_path, relative)
         # 미등록 도메인 = 아이디어 토픽 → Ideas/{topic}/
-        return self.storage_path / "Ideas" / domain
+        return self._contained_folder(self.storage_path, str(Path("Ideas") / domain))
+
+    @staticmethod
+    def _contained_folder(root: Path, relative: str) -> Path:
+        folder = (root / relative).resolve()
+        if not folder.is_relative_to(root.resolve()):
+            raise ValueError("도메인 폴더가 지정된 루트 밖을 참조합니다")
+        return folder
 
     # ── 검증 설정 프로퍼티 ────────────────────────────────
 
